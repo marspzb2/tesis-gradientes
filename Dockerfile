@@ -68,10 +68,11 @@ RUN python -m pip install --no-cache-dir .
 COPY src/py ./src/py
 COPY runServer.sh ./
 COPY --from=cpp-builder /app/build/cpp/Docker/lib/compression_python*.so \
-    /usr/local/lib/python${PYTHON_VERSION}/site-packages/
+    /app/native/
 
 RUN chmod +x runServer.sh
 
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/native
 
 CMD ["python", "src/py/pytorch-data-parallel-training.py"]
