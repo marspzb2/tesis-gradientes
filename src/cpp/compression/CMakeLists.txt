@@ -1,6 +1,14 @@
 find_package(Torch REQUIRED CONFIG)
 find_package(pybind11 CONFIG REQUIRED)
 
+find_library(
+        TORCH_PYTHON_LIBRARY
+        NAMES torch_python
+        PATHS "${TORCH_INSTALL_PREFIX}/lib"
+        NO_DEFAULT_PATH
+        REQUIRED
+)
+
 
 #Base library
 
@@ -50,7 +58,14 @@ set_target_properties(compression_python PROPERTIES
 )
 
 set_property(TARGET compression_python PROPERTY CXX_SCAN_FOR_MODULES ON)
-target_link_libraries(compression_python PUBLIC torch compression-base compression-methods Python::Python)
+target_link_libraries(compression_python
+        PUBLIC
+        torch
+        compression-base
+        compression-methods
+        Python::Python
+        "${TORCH_PYTHON_LIBRARY}"
+)
 target_link_libraries(compression_python PRIVATE
         spdlog::spdlog
 )
