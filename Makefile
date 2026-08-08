@@ -1,5 +1,6 @@
 IMAGE_VERSION := 1.0.0
-IMAGE_REPO := quay.io/marspzb/tesis-gradientes
+IMAGE_REPO := docker.io/marspzb/tesis-gradientes
+#quay.io/marspzb/tesis-gradientes
 .PHONY: clean hello activate
 hello:
 	echo "Hello"
