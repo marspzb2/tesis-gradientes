@@ -31,7 +31,8 @@ import random
 import compression_python
 from torch.utils.data.distributed import DistributedSampler
 
-OUT_FOLDER = os.environ.get("OUT_FOLDER") or "./out/summary"
+OUT_FOLDER = os.environ.get("OUT_FOLDER") or f"{os.getcwd()}/out/summary"
+DATA_FOLDER = os.environ.get("DATA_FOLDER") or f"{os.getcwd()}/data"
 WORLD_SIZE = os.environ.get('WORLD_SIZE') or 2
 MODEL_NAME = "alexnet"
 DATASET_NAME = "cifar10"
@@ -94,8 +95,8 @@ transform, MODEL_NAME, MODEL_CREATOR = MODEL_INFO()
 DS = None
 VALIDATION_DS = None
 if DATASET_NAME == "cifar10":
-    DS = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-    VALIDATION_DS = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+    DS = datasets.CIFAR10(root=DATA_FOLDER, train=True, download=True, transform=transform)
+    VALIDATION_DS = datasets.CIFAR10(root=DATA_FOLDER, train=False, download=True, transform=transform)
 else:
     raise Exception(f"No dataset found {DATASET_NAME}")
 
@@ -212,7 +213,7 @@ def train_model(rank, world_size):
 
         setup_node(rank, world_size)
         print(f"Node setted up: {rank}")
-        writer = SummaryWriter(f"{os.getcwd()}/summary-{rank}")
+        writer = SummaryWriter(f"{OUT_FOLDER}/summary-{rank}")
         iteration = 0
         sampler = DistributedSampler(DS, num_replicas=world_size, rank=rank)
         print(f"Loading loaders... {rank}")
