@@ -5,10 +5,12 @@
 #include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
 #include <torch/csrc/distributed/c10d/Types.hpp>
 #include <torch/csrc/distributed/c10d/comm.hpp>
+#include <torch/csrc/jit/python/pybind_utils.h>
 //#include <torch/csrc/distributed/c10d/python_comm.hpp>
 //#include <torch/csrc/distributed/c10d/ProcessGroupWrapper.hpp>
 //#include <torch/extension.h>
 #include <torch/csrc/utils/pybind.h>
+#include <torch/custom_class.h>
 #include "spdlog/spdlog.h"
 #include "spdlog/cfg/env.h"   // support for loading levels from the environment variable
 #include "spdlog/fmt/ostr.h"  // support for user defined types
@@ -48,10 +50,19 @@ PYBIND11_MODULE(compression_python, m) {
         Network::instance().reset_network_stats();
     });
 
-    m.def("initialize", [](c10::intrusive_ptr<c10d::ProcessGroup> pg) {
+    m.def("initialize", [](py::object pg) {
+        py::object boxed_pg = pg.attr("boxed")();
+        auto process_group_type = torch::getCustomClass(
+            "__torch__.torch.classes.c10d.ProcessGroup"
+        );
+        auto process_group = torch::jit::toIValue(
+            std::move(boxed_pg),
+            process_group_type
+        ).toCustomClass<c10d::ProcessGroup>();
+
         spdlog::cfg::load_env_levels();
         Network::instance().initialize(
-            pg,
+            std::move(process_group),
             Topology::RING
         );
     });

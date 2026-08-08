@@ -42,7 +42,6 @@
         {
             "name": "docker",
             "configurePreset": "docker",
-            "jobs": 1,
             "targets": [
                 "compression_python"
             ]
