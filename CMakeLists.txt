@@ -14,7 +14,7 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 #Dependencies
 include(FetchContent)
 
-find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+find_package(Python REQUIRED COMPONENTS Interpreter Development)
 
 if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/third-party")

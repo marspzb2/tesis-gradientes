@@ -50,7 +50,7 @@ set_target_properties(compression_python PROPERTIES
 )
 
 set_property(TARGET compression_python PROPERTY CXX_SCAN_FOR_MODULES ON)
-target_link_libraries(compression_python PUBLIC torch compression-base compression-methods Python3::Python)
+target_link_libraries(compression_python PUBLIC torch compression-base compression-methods Python::Python)
 target_link_libraries(compression_python PRIVATE
         spdlog::spdlog
 )
