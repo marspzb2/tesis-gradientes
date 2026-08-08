@@ -1,5 +1,8 @@
+.DS_Store
+build
 data
-253-*
+.idea
 .idea/*
 summary-*
-253_29346_142-pycharm-support-libs
+.venv314
+CMakeUserPresets.json

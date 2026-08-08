@@ -1,0 +1,51 @@
+{
+    "version": 4,
+    "configurePresets": [
+        {
+            "name": "default",
+            "displayName": "Release",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/cpp/Release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "debug",
+            "displayName": "Debug",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/cpp/Debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "docker",
+            "displayName": "Docker Release",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/cpp/Docker",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_COMPILER": "clang++"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "default",
+            "configurePreset": "default"
+        },
+        {
+            "name": "debug",
+            "configurePreset": "debug"
+        },
+        {
+            "name": "docker",
+            "configurePreset": "docker",
+            "jobs": 1,
+            "targets": [
+                "compression_python"
+            ]
+        }
+    ]
+}

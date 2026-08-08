@@ -1,0 +1,1 @@
+Before making any file edits, show the proposed diff and wait for explicit user approval

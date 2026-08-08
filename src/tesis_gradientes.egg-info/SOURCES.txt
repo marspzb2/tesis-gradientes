@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+src/py/pytorch-data-parallel-training.py
+src/tesis_gradientes.egg-info/PKG-INFO
+src/tesis_gradientes.egg-info/SOURCES.txt
+src/tesis_gradientes.egg-info/dependency_links.txt
+src/tesis_gradientes.egg-info/requires.txt
+src/tesis_gradientes.egg-info/top_level.txt
