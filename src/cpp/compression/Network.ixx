@@ -5,7 +5,7 @@ module;
 #include <torch/torch.h>
 #include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
 
-#include "../../../build/cpp/Release/third-party/libtorch/include/torch/csrc/distributed/c10d/Types.hpp"
+#include <torch/csrc/distributed/c10d/Types.hpp>
 
 export module Network;
 
