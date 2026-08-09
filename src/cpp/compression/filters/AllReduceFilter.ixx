@@ -44,7 +44,7 @@ export
                 }
 
                 if (!this->output_save_name.empty()) {
-                    this->add_matrix_state(output_save_name, tensor, ctx, true);
+                    this->add_matrix_state(output_save_name, reduced, ctx, true);
                 }
 
                 return reduced;

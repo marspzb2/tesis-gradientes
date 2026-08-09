@@ -32,7 +32,7 @@ export namespace compression::methods {
                     >> std::make_unique<OrthogonalizationFilter<InputT, int64_t> >("P_hat")
                     >> MatOperationFilter<InputT, int64_t>::mat_dot("ORIGINAL", "P_hat", "Q",
                                                                     MatrixTransformType::TRANSPOSE)
-                    >> std::make_unique<AllReduceFilter<InputT, int64_t> >("P")
+                    >> std::make_unique<AllReduceFilter<InputT, int64_t> >("Q")
                     //decompress
                     >> MatOperationFilter<InputT, int64_t>::mat_dot("P_hat", "Q", "", MatrixTransformType::NONE,
                                                                     MatrixTransformType::TRANSPOSE);
