@@ -17,9 +17,9 @@ export namespace compression::methods {
     class NoCompressionMethod:public BaseCompressionMethod{
     public:
          Tensor doMethod(Tensor &input, base::CompressionFilterCtx &filter_ctx) {
-            auto work= Network::instance().all_reduce(input)/filter_ctx.world_size();
+            auto work= Network::instance().all_reduce(input);
              work->wait();
-             return work->result()[0];
+             return work->result()[0]/filter_ctx.world_size();
         }
     };
 }
