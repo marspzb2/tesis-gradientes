@@ -33,20 +33,20 @@ from torch.utils.data.distributed import DistributedSampler
 
 OUT_FOLDER = os.environ.get("OUT_FOLDER") or f"{os.getcwd()}/out/summary"
 DATA_FOLDER = os.environ.get("DATA_FOLDER") or f"{os.getcwd()}/data"
-WORLD_SIZE = os.environ.get('WORLD_SIZE') or 2
+WORLD_SIZE = int(os.environ.get('WORLD_SIZE',2))
 MODEL_NAME = "alexnet"
 DATASET_NAME = "cifar10"
-REPORT_LOSS_EVERY = 20
+REPORT_LOSS_EVERY = 10
 PRINT_LOSS_EVERY = 300
 EPOCHS = 10
 BATCH_SIZE = 32
 
 GPU_AVAILABLE = torch.cuda.is_available()
 BACKEND = 'nccl' if GPU_AVAILABLE else 'gloo'
-BACKEND = 'gloo'
-COMPRESSION_NAME = "qsgd"
+#BACKEND = 'gloo'
+COMPRESSION_NAME =  os.environ.get("COMPRESSION_SCHEME") or "none"
 
-seed = int(os.environ.get('SEED')) if os.environ.get('SEED') else 42
+seed = int(os.environ.get('SEED',42))
 
 random.seed(seed)
 np.random.seed(seed)
@@ -73,6 +73,14 @@ def alex_net_creator():
 
     return transform, 'alexnet', create_model
 
+
+COMPRESSION_CONFIG = None
+if COMPRESSION_NAME.lower() == "powersgd":
+    COMPRESSION_CONFIG = "by_param", lambda tensor: compression_python.PowerSGD(int(os.environ.get("POWER_SGD_RANK",5)))
+elif COMPRESSION_NAME.lower() == "none":
+    COMPRESSION_CONFIG = "whole", lambda tensor: compression_python.NoCompression()
+else:
+    raise RuntimeError("Error compression not supported")
 
 COMPRESSOR = None
 # COMPRESSOR = qsgd_cpu_extension.qsgd_cpp_compress_hook
@@ -120,34 +128,42 @@ def cleanup():
     dist.destroy_process_group()
 
 
-def validate_model(model, validation_loader, loss_function, writer, rank, iteration):
-    if rank != 0:
-        return
-    print("Validating dataset...")
+def validate_model(model, validation_loader, loss_function, writer, rank, iteration,epoch):
+    dist.barrier()
+    if rank == 0:
+        print(f"Validating dataset {iteration}/{epoch}...")
 
-    total_loss = 0
-    total_accuracy = 0
+        total_loss = 0
+        total_accuracy = 0
 
-    with torch.no_grad():
-        #  iterating through batches
-        for images, labels in tqdm(validation_loader):
-            if GPU_AVAILABLE:
-                images, labels = images.to(rank), labels.to(rank)
-            classifications = model(images)
-            total_loss += loss_function(classifications, labels).item()
-            # Step 1: Get the predicted class (index of the max value)
-            _, preds = torch.max(classifications, dim=1)
+        model = model.module or model
+        model.eval()
+        with torch.no_grad():
+            #  iterating through batches
+            total_correct = 0
+            total_samples = 0
+            for images, labels in tqdm(validation_loader):
+                if GPU_AVAILABLE:
+                    images, labels = images.to(rank), labels.to(rank)
+                classifications = model(images)
+                total_loss += loss_function(classifications, labels).item()
+                # Step 1: Get the predicted class (index of the max value)
+                _, preds = torch.max(classifications, dim=1)
 
-            # Step 2: Compare with labels and calculate accuracy
-            correct = (preds == labels).sum().item()
-            accuracy = correct / labels.size(0)
-            total_accuracy += accuracy
+                # Step 2: Compare with labels and calculate accuracy
+                total_correct += (preds == labels).sum().item()
+                total_samples +=  labels.size(0)
+            total_accuracy = total_correct / total_samples
 
-        writer.add_scalar('validation_loss', total_loss, iteration)
-        writer.add_scalar('validation_loss_mean', total_loss / len(validation_loader), iteration)
-        writer.add_scalar('validation_accuracy', total_accuracy / len(validation_loader), iteration)
-        print(
-            f"Finished validating dataset on rank {rank}: {total_loss / len(validation_loader)} -- {total_accuracy * 100 / len(validation_loader)} %")
+            writer.add_scalar('validation_loss', total_loss, iteration)
+            writer.add_scalar('validation_loss_mean', total_loss / len(validation_loader), iteration)
+            writer.add_scalar('validation_accuracy', total_accuracy, iteration)
+            print(
+                f"Finished validating dataset on rank {rank}: {total_loss / len(validation_loader)} -- {total_accuracy * 100 } %")
+        model.train()
+    else:
+        print("Skipping validation")
+    dist.barrier()
 
 
 class CompressionPythonState:
@@ -208,200 +224,152 @@ class CompressionPythonState:
 def train_model(rank, world_size):
     print(f"Running basic DDP example on rank {rank}.")
 
+    if GPU_AVAILABLE:
+        available_gpus = torch.cuda.device_count()
+        if world_size > available_gpus:
+            raise RuntimeError(
+                f"WORLD_SIZE={world_size}, pero solo hay "
+                f"{available_gpus} GPUs CUDA disponibles"
+            )
+        torch.cuda.set_device(rank)
+
     try:
         # node_compression = COMPRESSOR()
 
         setup_node(rank, world_size)
         print(f"Node setted up: {rank}")
-        writer = SummaryWriter(f"{OUT_FOLDER}/summary-{rank}")
-        iteration = 0
-        sampler = DistributedSampler(DS, num_replicas=world_size, rank=rank)
-        print(f"Loading loaders... {rank}")
-        dataloader = DataLoader(DS, batch_size=BATCH_SIZE, sampler=sampler, num_workers=4, pin_memory=GPU_AVAILABLE)
-        validation_loader = DataLoader(VALIDATION_DS, batch_size=VALIDATION_BATCH, num_workers=4,
-                                       pin_memory=GPU_AVAILABLE) if rank == 0 else None
-        print(f"Loaders loaded... {rank}")
-        _model, criterion, optimizer_params = MODEL_CREATOR()
-        if GPU_AVAILABLE:
-            _model.to(rank)
-            ddp_model = DDP(_model, device_ids=[rank])
-        else:
-            ddp_model = DDP(_model)
-
-        def obtener_vectores_comprimidos(local_vector):
-            """
-            Usamos al gather para recuperar todos los gradientes comprimidos, soporta largo variable por lo que hay que pedir los sizes primero.
-            :param local_vector:
-            :return:
-            """
-            world_size = dist.get_world_size()
-            local_compressed_gradient_size = torch.tensor([local_vector.numel()], dtype=torch.long,
-                                                          device=local_vector.device)
-            world_gradient_sizes = [torch.zeros(1, dtype=torch.long, device=local_vector.device) for _ in
-                                    range(world_size)]
-            dist.all_gather(world_gradient_sizes, local_compressed_gradient_size)
-            # Aca estan los tamaños de los comprimidos
-            gradient_sizes = [s.item() for s in world_gradient_sizes]
-            print("Size of gradient vectors: ", gradient_sizes)
-
-            # ahora si podemos pedir los gradientes
-            gradientes_de_los_servidores = [
-                torch.zeros(size, dtype=local_vector.dtype, device=local_vector.device)
-                for size in gradient_sizes
-            ]
-
-            return dist.all_gather(gradientes_de_los_servidores, local_vector,
-                                   async_op=True).get_future(), gradientes_de_los_servidores
-
-        # compression_state = node_compression.create_state()
-        python_state = CompressionPythonState()
-
-        def compress_hook(state, bucket: dist.GradBucket) -> torch.futures.Future[torch.Tensor]:
-            gradient_tensor = bucket.buffer()
-            no_compression = False
-            method_by_param = False  # True #Powersgd
-            get_reconstruction_metric = True
-            square_original_matrix = False
-
-            compression_method_creator = lambda tensor: compression_python.PowerSGD(5)
-            compression_method_creator = lambda tensor: compression_python.NoCompression()
-            python_state.add_vector_size(gradient_tensor)
-            world_size = dist.get_world_size()
-            fut = torch.futures.Future()
-            if no_compression:
-                fut.set_result(average_tensor_on_the_network(gradient_tensor))
-            elif method_by_param:
-                current_index_in_buffer = 0
-                for param in bucket.parameters():
-                    original_shape = param.shape
-                    total_elements = param.numel()
-                    tensor_elements = gradient_tensor[current_index_in_buffer:current_index_in_buffer + total_elements]
-                    matrix_to_compress = tensor_elements.view(original_shape)
-                    if matrix_to_compress.dim() == 4:
-                        matrix_to_compress = matrix_to_compress.view(original_shape[0], -1)
-
-                    current_index_in_buffer += total_elements
-                    method = compression_method_creator(matrix_to_compress)
-                    compression_ctx = compression_python.CompressionFilterCtx(WORLD_SIZE)
-                    result = method.run(matrix_to_compress, compression_ctx)
-                    # print("Paso")
-                    tensor_elements.copy_(result.view(-1))
-                    # print("Termino la copia")
-                fut.set_result(gradient_tensor)
-            elif square_original_matrix:
-                print("Not done yet")
+        with SummaryWriter(f"{OUT_FOLDER}/summary-{rank}") as writer:
+            iteration = 0
+            sampler = DistributedSampler(DS, num_replicas=world_size, rank=rank)
+            print(f"Loading loaders... {rank}")
+            dataloader = DataLoader(DS, batch_size=BATCH_SIZE, sampler=sampler, num_workers=4, pin_memory=GPU_AVAILABLE)
+            validation_loader = DataLoader(VALIDATION_DS, batch_size=VALIDATION_BATCH, num_workers=4,
+                                           pin_memory=GPU_AVAILABLE) if rank == 0 else None
+            print(f"Loaders loaded... {rank}")
+            _model, criterion, optimizer_params = MODEL_CREATOR()
+            if GPU_AVAILABLE:
+                _model.to(rank)
+                ddp_model = DDP(_model, device_ids=[rank])
             else:
-                compression_ctx = compression_python.CompressionFilterCtx(WORLD_SIZE)
-                result = compression_method_creator(gradient_tensor).run(gradient_tensor, compression_ctx)
-                fut.set_result(result)
-            if  get_reconstruction_metric:
-                #print("Reconstruction metric computing")
-                averaged_result_of_gradient_tensor = average_tensor_on_the_network(gradient_tensor)
-                reconstructed_tensor = fut.wait()
-                python_state.set_reconstruction_error(reconstructed_tensor, averaged_result_of_gradient_tensor)
-                python_state.set_reconstruction_power(reconstructed_tensor)
-                #print("Reconstruction metric computed")
-                #print(reconstructed_tensor[:10])
-                #print(averaged_result_of_gradient_tensor[:10])
+                ddp_model = DDP(_model)
 
-            return fut
+            # compression_state = node_compression.create_state()
+            python_state = CompressionPythonState()
 
-        def average_tensor_on_the_network(gradient_tensor) -> Any:
-            averaged_tensor = gradient_tensor.clone()
-            dist.all_reduce(
-                averaged_tensor,
-                op=dist.ReduceOp.SUM,
-            )
-            return averaged_tensor.div_(dist.get_world_size())
+            def compress_hook(state, bucket: dist.GradBucket) -> torch.futures.Future[torch.Tensor]:
+                gradient_tensor = bucket.buffer()
+                param_config,compression_method_creator = COMPRESSION_CONFIG
+                no_compression = False
+                method_by_param = False  # True #Powersgd
+                square_original_matrix = False
+                get_reconstruction_metric = True
+                if param_config == "by_param":
+                    method_by_param = True
 
-        def qsgd_hook(state, bucket):
 
-            tensor = bucket.buffer()
+                python_state.add_vector_size(gradient_tensor)
+                world_size = dist.get_world_size()
+                fut = torch.futures.Future()
+                if no_compression:
+                    fut.set_result(average_tensor_on_the_network(gradient_tensor))
+                elif method_by_param:
+                    current_index_in_buffer = 0
+                    for param in bucket.parameters():
+                        original_shape = param.shape
+                        total_elements = param.numel()
+                        tensor_elements = gradient_tensor[current_index_in_buffer:current_index_in_buffer + total_elements]
+                        matrix_to_compress = tensor_elements.view(original_shape)
+                        if matrix_to_compress.dim() == 4:
+                            matrix_to_compress = matrix_to_compress.view(original_shape[0], -1)
 
-            # =========================
-            # COMPRESIÓN C++
-            # =========================
+                        current_index_in_buffer += total_elements
+                        method = compression_method_creator(matrix_to_compress)
+                        compression_ctx = compression_python.CompressionFilterCtx(WORLD_SIZE)
+                        result = method.run(matrix_to_compress, compression_ctx)
+                        # print("Paso")
+                        tensor_elements.copy_(result.view(-1))
+                        # print("Termino la copia")
+                    fut.set_result(gradient_tensor)
+                elif square_original_matrix:
+                    print("Not done yet")
+                else:
+                    compression_ctx = compression_python.CompressionFilterCtx(WORLD_SIZE)
+                    tensor_copy = gradient_tensor.clone()
+                    result = compression_method_creator(gradient_tensor).run(gradient_tensor, compression_ctx)
+                    fut.set_result(result)
+                if  get_reconstruction_metric:
+                    #print("Reconstruction metric computing")
+                    averaged_result_of_gradient_tensor = average_tensor_on_the_network(tensor_copy)
+                    reconstructed_tensor = fut.wait()
+                    python_state.set_reconstruction_error(reconstructed_tensor, averaged_result_of_gradient_tensor)
+                    python_state.set_reconstruction_power(reconstructed_tensor)
+                    #print("Reconstruction metric computed")
+                    #print(reconstructed_tensor[:10])
+                    #print(averaged_result_of_gradient_tensor[:10])
 
-            quantized, scale = qsgd_cpu_extension.compress_qsgd(tensor)
+                return fut
 
-            # =========================
-            # ACA normalmente harías:
-            #
-            # all_gather / all_reduce
-            # sobre quantized y scale
-            # =========================
+            def average_tensor_on_the_network(gradient_tensor) :
+                averaged_tensor = gradient_tensor
+                dist.all_reduce(
+                    averaged_tensor,
+                    op=dist.ReduceOp.SUM,
+                )
+                return averaged_tensor.div_(dist.get_world_size())
 
-            # =========================
-            # DESCOMPRESIÓN C++
-            # =========================
+            ddp_model.register_comm_hook(None, compress_hook)
+            # ddp_model.register_comm_hook(None,qsgd_hook)
+            optimizer = optim.SGD(ddp_model.parameters(), **optimizer_params)
+            running_loss = 0
+            report_loss = 0
+            print(f"Model in card... {rank}")
+            ddp_model.train()
+            for epoch in range(EPOCHS):
+                sampler.set_epoch(epoch)
+                for epoch_iteration, (data, target) in tqdm(enumerate(dataloader), total=len(dataloader)):
+                    if GPU_AVAILABLE:
+                        data, target = data.to(rank), target.to(rank)
+                    # print(f"Hola {rank}/{epoch}/{iteration}")
+                    iteration += 1
+                    optimizer.zero_grad()
+                    outputs = ddp_model(data)
+                    loss = criterion(outputs, target)
+                    running_loss += loss.item()
+                    report_loss += loss.item()
+                    loss.backward()
+                    optimizer.step()
 
-            decompressed = qsgd_cpu_extension.decompress_qsgd(
-                quantized,
-                scale
-            )
+                    if iteration % REPORT_LOSS_EVERY == 0:
+                        writer.add_scalar('loss', report_loss / REPORT_LOSS_EVERY, iteration)
+                        writer.add_scalar('transferred_kb', compression_python.get_bytes() / 1024., iteration)
+                        writer.add_scalar('original_kb', python_state.get_original_bytes() / 1024., iteration)
+                        if(python_state.get_reconstruction_norm_l2() is not None):
+                            writer.add_scalar('reconstruction_norm_l2', python_state.get_reconstruction_norm_l2(), iteration)
+                            writer.add_scalar('reconstruction_norm_l1', python_state.get_reconstruction_norm_l1(), iteration)
+                            writer.add_scalar('reconstruction_norm_l0', python_state.get_reconstruction_norm_l0(), iteration)
+                            writer.add_scalar('reconstruction_norm_inf', python_state.get_reconstruction_norm_inf(), iteration)
+                        if python_state.get_reconstruction_error_l2() is not None:
+                            writer.add_scalar('reconstruction_error_l2', python_state.get_reconstruction_error_l2(), iteration)
+                            writer.add_scalar('reconstruction_error_l1', python_state.get_reconstruction_error_l1(), iteration)
 
-            fut = torch.futures.Future()
+                        # print(
+                        #     f"Megabytes {compression_python.get_bytes()}/{python_state.get_original_bytes()}({compression_python.get_bytes() / python_state.get_original_bytes()})")
+                        #print(f"Model loss {report_loss / REPORT_LOSS_EVERY})")
+                        report_loss = 0
+                        compression_python.reset_network_stats()
+                        python_state.reset_network_stats()
 
-            fut.set_result(decompressed)
+                    if iteration % PRINT_LOSS_EVERY == 0:
+                        print(f"Loss of {epoch_iteration}/{epoch} ({iteration})): {running_loss / PRINT_LOSS_EVERY}")
+                        validate_model(ddp_model, validation_loader, criterion, writer, rank, iteration,epoch)
+                        running_loss = 0
 
-            return fut
-
-        ddp_model.register_comm_hook(None, compress_hook)
-        # ddp_model.register_comm_hook(None,qsgd_hook)
-        optimizer = optim.SGD(ddp_model.parameters(), **optimizer_params)
-        running_loss = 0
-        report_loss = 0
-        print(f"Model in card... {rank}")
-        ddp_model.train()
-        for epoch in range(EPOCHS):
-            sampler.set_epoch(epoch)
-            for epoch_iteration, (data, target) in tqdm(enumerate(dataloader), total=len(dataloader)):
-                if GPU_AVAILABLE:
-                    data, target = data.to(rank), target.to(rank)
-                # print(f"Hola {rank}/{epoch}/{iteration}")
-                iteration += 1
-                optimizer.zero_grad()
-                outputs = ddp_model(data)
-                loss = criterion(outputs, target)
-                running_loss += loss.item()
-                report_loss += loss.item()
-                loss.backward()
-                optimizer.step()
-
-                if iteration % REPORT_LOSS_EVERY == 0:
-                    writer.add_scalar('loss', report_loss / REPORT_LOSS_EVERY, iteration)
-                    writer.add_scalar('transferred_kb', compression_python.get_bytes() / 1024., iteration)
-                    writer.add_scalar('original_kb', python_state.get_original_bytes() / 1024., iteration)
-                    if(python_state.get_reconstruction_norm_l2() is not None):
-                        writer.add_scalar('reconstruction_norm_l2', python_state.get_reconstruction_norm_l2(), iteration)
-                        writer.add_scalar('reconstruction_norm_l1', python_state.get_reconstruction_norm_l1(), iteration)
-                        writer.add_scalar('reconstruction_norm_l0', python_state.get_reconstruction_norm_l0(), iteration)
-                        writer.add_scalar('reconstruction_norm_inf', python_state.get_reconstruction_norm_inf(), iteration)
-                    if python_state.get_reconstruction_error_l2() is not None:
-                        writer.add_scalar('reconstruction_error_l2', python_state.get_reconstruction_error_l2(), iteration)
-                        writer.add_scalar('reconstruction_error_l1', python_state.get_reconstruction_error_l1(), iteration)
-
-                    print(f"Model loss {report_loss / REPORT_LOSS_EVERY})")
-                    print(
-                        f"Megabytes {compression_python.get_bytes()}/{python_state.get_original_bytes()}({compression_python.get_bytes() / python_state.get_original_bytes()})")
-                    report_loss = 0
-                    compression_python.reset_network_stats()
-                    python_state.reset_network_stats()
-
-                if iteration % PRINT_LOSS_EVERY == 0:
-                    # if GPU_AVAILABLE:
-                    #    dist.barrier(device_ids=[rank])
-
-                    print(f"Loss of {iteration}/{epoch}: {running_loss / PRINT_LOSS_EVERY}")
-                    validate_model(ddp_model, validation_loader, criterion, writer, rank, iteration)
-                    running_loss = 0
-                    # if GPU_AVAILABLE:
-                    #    dist.barrier(device_ids=[rank])
-
-        cleanup()
         print(f"Finished running basic DDP example on rank {rank}.")
     except Exception as e:
         print(f"Failed running basic DDP example on rank {rank}: {e}")
+    finally:
+        cleanup()
+
 
 
 if __name__ == "__main__":

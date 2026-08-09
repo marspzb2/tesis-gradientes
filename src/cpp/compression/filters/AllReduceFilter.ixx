@@ -23,10 +23,11 @@ export
         class AllReduceFilter :public CompressionFilter<ValueT, ValueT, NoValue, EncodingT> {
         private:
             std::string output_save_name;
+            bool average_results;
 
         public:
             explicit AllReduceFilter(const std::string &  output_save_name)
-                : output_save_name(output_save_name) {
+                : output_save_name(output_save_name),average_results(true) {
             }
 
             Tensor internal_do_filter(const at::Tensor &tensor, const std::optional<NoValue> &metadata,
@@ -37,7 +38,10 @@ export
 
                 auto work = ctx.network().get().all_reduce(tensor);
                 work->wait();
-                Tensor reduced = work->result()[0] / ctx.world_size();
+                Tensor reduced = work->result()[0];
+                if (average_results) {
+                    reduced = reduced / ctx.world_size();
+                }
 
                 if (!this->output_save_name.empty()) {
                     this->add_matrix_state(output_save_name, tensor, ctx, true);

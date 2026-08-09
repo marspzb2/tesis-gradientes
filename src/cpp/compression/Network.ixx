@@ -5,6 +5,8 @@ module;
 #include <torch/torch.h>
 #include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
 
+#include "../../../build/cpp/Release/third-party/libtorch/include/torch/csrc/distributed/c10d/Types.hpp"
+
 export module Network;
 
 export enum class Topology {
@@ -144,10 +146,22 @@ public:
 
     template<typename... Args>
     c10::intrusive_ptr<c10d::Work> all_reduce(Args &&... tensors) {
+        return this->all_reduce_with_op(
+            c10d::ReduceOp::SUM,
+            std::forward<Args>(tensors)...
+        );
+    }
+
+    template<typename... Args>
+    c10::intrusive_ptr<c10d::Work> all_reduce_with_op(
+        c10d::ReduceOp::RedOpType operation,
+        Args &&... tensors) {
         std::vector<torch::Tensor> send_tensors{std::forward<Args>(tensors)...};
         this->add_bytes(send_tensors);
 
-        return this->process_group->allreduce(send_tensors);
+        c10d::AllreduceOptions options;
+        options.reduceOp = operation;
+        return this->process_group->allreduce(send_tensors, options);
     }
 
     void add_bytes(const std::vector<std::vector<torch::Tensor> > &send_tensors) {
