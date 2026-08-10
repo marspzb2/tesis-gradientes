@@ -56,21 +56,19 @@ ARG PYTORCH_INDEX_URL
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
-
 RUN python -m pip install --no-cache-dir \
         --index-url "${PYTORCH_INDEX_URL}" \
         torch==2.9.1 \
-        torchvision==0.24.1
+        torchvision==0.24.1 \
+
+COPY pyproject.toml README.md ./
 
 RUN python -m pip install --no-cache-dir .
 
 COPY src/py ./src/py
-COPY runServer.sh ./
+
 COPY --from=cpp-builder /app/build/cpp/Docker/lib/compression_python*.so \
     /app/native/
-
-RUN chmod +x runServer.sh
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/native

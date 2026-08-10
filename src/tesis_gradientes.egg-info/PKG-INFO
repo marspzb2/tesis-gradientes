@@ -8,3 +8,4 @@ Requires-Dist: torch==2.9.1
 Requires-Dist: torchvision==0.24.1
 Requires-Dist: tqdm==4.70.0
 Requires-Dist: tensorboard>=2.21.0
+Requires-Dist: runpod==1.11.0

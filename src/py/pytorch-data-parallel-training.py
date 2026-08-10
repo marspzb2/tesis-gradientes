@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import runpod
 import os
 import sys
 import tempfile
@@ -25,6 +26,7 @@ from tqdm import tqdm
 from math import ceil
 import os
 import random
+from time import  sleep
 
 
 # print(torch.__version__)
@@ -169,6 +171,8 @@ def validate_model(model, validation_loader, loss_function, writer, rank, iterat
 class CompressionPythonState:
     def __init__(self):
         self.original_bytes = 0
+        self.reset_reconstruction_error()
+        self.reset_reconstruction_power()
 
     def add_vector_size(self, vector):
         self.original_bytes += vector.numel() * vector.dtype.itemsize
@@ -182,28 +186,48 @@ class CompressionPythonState:
     def reset_network_stats(self):
         self.original_bytes = 0
 
-    def set_reconstruction_error(self, reconstructed, original):
+    def accumulate_reconstruction_error(self, reconstructed, original):
         error = reconstructed - original
-        self.error_inf = torch.linalg.vector_norm(error, ord=float('inf'))
-        self.error_l2 = torch.linalg.vector_norm(error, ord=2)
-        self.error_l1 = torch.linalg.vector_norm(error, ord=1)
+        bucket_l2_squared = torch.sum(error.square())
+        bucket_l1 = torch.sum(error.abs())
+        bucket_inf = torch.max(error.abs())
+
+        self.error_l2_squared = (
+            bucket_l2_squared
+            if self.error_l2_squared is None
+            else self.error_l2_squared + bucket_l2_squared
+        )
+        self.error_l1 = (
+            bucket_l1
+            if self.error_l1 is None
+            else self.error_l1 + bucket_l1
+        )
+        self.error_inf = (
+            bucket_inf
+            if self.error_inf is None
+            else torch.maximum(self.error_inf, bucket_inf)
+        )
 
     def get_reconstruction_error_inf(self):
         return self.error_inf
 
     def get_reconstruction_error_l2(self):
-        return self.error_l2
+        if self.error_l2_squared is None:
+            return None
+        return torch.sqrt(self.error_l2_squared)
 
     def get_reconstruction_error_l1(self):
         return self.error_l1
 
     def reset_reconstruction_error(self):
-        self.error_l2 = None
+        self.error_l2_squared = None
         self.error_l1 = None
         self.error_inf = None
 
     def get_reconstruction_norm_l2(self):
-        return self.reconstruction_norm_l2
+        if self.reconstruction_norm_l2_squared is None:
+            return None
+        return torch.sqrt(self.reconstruction_norm_l2_squared)
 
     def get_reconstruction_norm_l1(self):
         return self.reconstruction_norm_l1
@@ -214,11 +238,38 @@ class CompressionPythonState:
     def get_reconstruction_norm_inf(self):
         return self.reconstruction_norm_inf
 
-    def set_reconstruction_power(self, reconstructed):
-        self.reconstruction_norm_l2 = torch.linalg.vector_norm(reconstructed, ord=2)
-        self.reconstruction_norm_l1 = torch.linalg.vector_norm(reconstructed, ord=1)
-        self.reconstruction_norm_inf = torch.linalg.vector_norm(reconstructed, ord=float('inf'))
-        self.reconstruction_norm_l0 = torch.linalg.vector_norm(reconstructed, ord=0)
+    def accumulate_reconstruction_power(self, reconstructed):
+        bucket_l2_squared = torch.sum(reconstructed.square())
+        bucket_l1 = torch.sum(reconstructed.abs())
+        bucket_l0 = torch.count_nonzero(reconstructed)
+        bucket_inf = torch.max(reconstructed.abs())
+
+        self.reconstruction_norm_l2_squared = (
+            bucket_l2_squared
+            if self.reconstruction_norm_l2_squared is None
+            else self.reconstruction_norm_l2_squared + bucket_l2_squared
+        )
+        self.reconstruction_norm_l1 = (
+            bucket_l1
+            if self.reconstruction_norm_l1 is None
+            else self.reconstruction_norm_l1 + bucket_l1
+        )
+        self.reconstruction_norm_l0 = (
+            bucket_l0
+            if self.reconstruction_norm_l0 is None
+            else self.reconstruction_norm_l0 + bucket_l0
+        )
+        self.reconstruction_norm_inf = (
+            bucket_inf
+            if self.reconstruction_norm_inf is None
+            else torch.maximum(self.reconstruction_norm_inf, bucket_inf)
+        )
+
+    def reset_reconstruction_power(self):
+        self.reconstruction_norm_l2_squared = None
+        self.reconstruction_norm_l1 = None
+        self.reconstruction_norm_l0 = None
+        self.reconstruction_norm_inf = None
 
 
 def train_model(rank, world_size):
@@ -240,6 +291,9 @@ def train_model(rank, world_size):
         print(f"Node setted up: {rank}")
         with SummaryWriter(f"{OUT_FOLDER}/summary-{rank}") as writer:
             iteration = 0
+            compression_ctx = compression_python.CompressionFilterCtx(WORLD_SIZE)
+            python_state = CompressionPythonState()
+            compression_contexts_by_method = {}
             sampler = DistributedSampler(DS, num_replicas=world_size, rank=rank)
             print(f"Loading loaders... {rank}")
             dataloader = DataLoader(DS, batch_size=BATCH_SIZE, sampler=sampler, num_workers=4, pin_memory=GPU_AVAILABLE)
@@ -254,9 +308,15 @@ def train_model(rank, world_size):
                 ddp_model = DDP(_model)
 
             # compression_state = node_compression.create_state()
-            python_state = CompressionPythonState()
 
             def compress_hook(state, bucket: dist.GradBucket) -> torch.futures.Future[torch.Tensor]:
+                # print(
+                #     f"rank={dist.get_rank()} "
+                #     f"iteration={iteration} "
+                #     f"bucket={bucket.index()} "
+                #     f"last={bucket.is_last()} "
+                #     f"elements={bucket.buffer().numel()}"
+                # )
                 gradient_tensor = bucket.buffer()
                 param_config,compression_method_creator = COMPRESSION_CONFIG
                 no_compression = False
@@ -270,6 +330,7 @@ def train_model(rank, world_size):
                 python_state.add_vector_size(gradient_tensor)
                 world_size = dist.get_world_size()
                 fut = torch.futures.Future()
+                tensor_copy = gradient_tensor.clone()
                 if no_compression:
                     fut.set_result(average_tensor_on_the_network(gradient_tensor))
                 elif method_by_param:
@@ -277,6 +338,10 @@ def train_model(rank, world_size):
                     for param in bucket.parameters():
                         original_shape = param.shape
                         total_elements = param.numel()
+                        param_key = param.data_ptr()
+                        if param_key not in compression_contexts_by_method:
+                            compression_contexts_by_method[param_key]=compression_python.CompressionFilterCtx(WORLD_SIZE)
+                            print(f"Initialized context for powersgd on param: {param.data_ptr()}")
                         tensor_elements = gradient_tensor[current_index_in_buffer:current_index_in_buffer + total_elements]
                         matrix_to_compress = tensor_elements.view(original_shape)
                         if matrix_to_compress.dim() == 4:
@@ -284,8 +349,7 @@ def train_model(rank, world_size):
 
                         current_index_in_buffer += total_elements
                         method = compression_method_creator(matrix_to_compress)
-                        compression_ctx = compression_python.CompressionFilterCtx(WORLD_SIZE)
-                        result = method.run(matrix_to_compress, compression_ctx)
+                        result = method.run(matrix_to_compress, compression_contexts_by_method[param_key])
                         # print("Paso")
                         tensor_elements.copy_(result.view(-1))
                         # print("Termino la copia")
@@ -293,16 +357,14 @@ def train_model(rank, world_size):
                 elif square_original_matrix:
                     print("Not done yet")
                 else:
-                    compression_ctx = compression_python.CompressionFilterCtx(WORLD_SIZE)
-                    tensor_copy = gradient_tensor.clone()
                     result = compression_method_creator(gradient_tensor).run(gradient_tensor, compression_ctx)
                     fut.set_result(result)
                 if  get_reconstruction_metric:
                     #print("Reconstruction metric computing")
                     averaged_result_of_gradient_tensor = average_tensor_on_the_network(tensor_copy)
                     reconstructed_tensor = fut.wait()
-                    python_state.set_reconstruction_error(reconstructed_tensor, averaged_result_of_gradient_tensor)
-                    python_state.set_reconstruction_power(reconstructed_tensor)
+                    python_state.accumulate_reconstruction_error(reconstructed_tensor, averaged_result_of_gradient_tensor)
+                    python_state.accumulate_reconstruction_power(reconstructed_tensor)
                     #print("Reconstruction metric computed")
                     #print(reconstructed_tensor[:10])
                     #print(averaged_result_of_gradient_tensor[:10])
@@ -334,6 +396,8 @@ def train_model(rank, world_size):
                     optimizer.zero_grad()
                     outputs = ddp_model(data)
                     loss = criterion(outputs, target)
+                    python_state.reset_reconstruction_error()
+                    python_state.reset_reconstruction_power()
                     running_loss += loss.item()
                     report_loss += loss.item()
                     loss.backward()
@@ -372,8 +436,24 @@ def train_model(rank, world_size):
 
 
 
+
 if __name__ == "__main__":
-    mp.spawn(train_model,
-             args=(WORLD_SIZE,),
-             nprocs=WORLD_SIZE,
-             join=True)
+    try:
+        mp.spawn(train_model,
+                 args=(WORLD_SIZE,),
+                 nprocs=WORLD_SIZE,
+                join=True)
+    except:
+        print("Failed to spawn")
+    finally:
+        try:
+            pod_id = os.environ["RUNPOD_POD_ID"]
+            api_key = os.environ["RUNPOD_API_KEY"]
+            if pod_id and api_key:
+                runpod.api_key = api_key
+                runpod.stop_pod(pod_id)
+            else:
+                print("Runpod env not detected")
+        finally:
+            sleep(60)
+            print("Ended")
