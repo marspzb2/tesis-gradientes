@@ -25,13 +25,14 @@ ENV PATH="/opt/venv/bin:${PATH}"
 
 WORKDIR /app
 
-COPY CMakeLists.txt CMakePresets.json pyproject.toml README.md ./
 
 RUN uv pip install \
         --python /opt/venv/bin/python \
         --index-url "${PYTORCH_INDEX_URL}" \
         torch==2.9.1 \
         torchvision==0.24.1
+
+COPY pyproject.toml  ./
 
 RUN uv pip install \
         --python /opt/venv/bin/python \
@@ -40,6 +41,7 @@ RUN uv pip install \
         pybind11 \
         .
 
+COPY CMakeLists.txt CMakePresets.json ./
 COPY src/cpp ./src/cpp
 
 RUN CMAKE_PREFIX_PATH="$(python -c \
@@ -61,7 +63,7 @@ RUN python -m pip install --no-cache-dir \
         torch==2.9.1 \
         torchvision==0.24.1 \
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml ./
 
 RUN python -m pip install --no-cache-dir .
 
