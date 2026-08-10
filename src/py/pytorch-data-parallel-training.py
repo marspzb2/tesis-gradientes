@@ -26,8 +26,7 @@ from tqdm import tqdm
 from math import ceil
 import os
 import random
-from time import  sleep
-
+from time import sleep
 
 # print(torch.__version__)
 import compression_python
@@ -35,7 +34,13 @@ from torch.utils.data.distributed import DistributedSampler
 
 OUT_FOLDER = os.environ.get("OUT_FOLDER") or f"{os.getcwd()}/out/summary"
 DATA_FOLDER = os.environ.get("DATA_FOLDER") or f"{os.getcwd()}/data"
-WORLD_SIZE = int(os.environ.get('WORLD_SIZE',2))
+WORLD_SIZE = int(os.environ.get('WORLD_SIZE', 2))
+CPUS_AVAILABLE = 8
+try:
+    CPUS_AVAILABLE = os.os.sched_getaffinity(0)
+except:
+    CPUS_AVAILABLE = os.cpu_count() or 8
+NUM_WORKERS = int(os.environ.get("NUM_WORKERS", min(16, max(4, CPUS_AVAILABLE // WORLD_SIZE - 1))))
 MODEL_NAME = "alexnet"
 DATASET_NAME = "cifar10"
 REPORT_LOSS_EVERY = 10
@@ -45,10 +50,10 @@ BATCH_SIZE = 32
 
 GPU_AVAILABLE = torch.cuda.is_available()
 BACKEND = 'nccl' if GPU_AVAILABLE else 'gloo'
-#BACKEND = 'gloo'
-COMPRESSION_NAME =  os.environ.get("COMPRESSION_SCHEME") or "none"
+# BACKEND = 'gloo'
+COMPRESSION_NAME = os.environ.get("COMPRESSION_SCHEME") or "none"
 
-seed = int(os.environ.get('SEED',42))
+seed = int(os.environ.get('SEED', 42))
 
 random.seed(seed)
 np.random.seed(seed)
@@ -78,7 +83,8 @@ def alex_net_creator():
 
 COMPRESSION_CONFIG = None
 if COMPRESSION_NAME.lower() == "powersgd":
-    COMPRESSION_CONFIG = "by_param", lambda tensor: compression_python.PowerSGD(int(os.environ.get("POWER_SGD_RANK",5)))
+    COMPRESSION_CONFIG = "by_param", lambda tensor: compression_python.PowerSGD(
+        int(os.environ.get("POWER_SGD_RANK", 5)))
 elif COMPRESSION_NAME.lower() == "none":
     COMPRESSION_CONFIG = "whole", lambda tensor: compression_python.NoCompression()
 else:
@@ -130,7 +136,7 @@ def cleanup():
     dist.destroy_process_group()
 
 
-def validate_model(model, validation_loader, loss_function, writer, rank, iteration,epoch):
+def validate_model(model, validation_loader, loss_function, writer, rank, iteration, epoch):
     dist.barrier()
     if rank == 0:
         print(f"Validating dataset {iteration}/{epoch}...")
@@ -154,14 +160,14 @@ def validate_model(model, validation_loader, loss_function, writer, rank, iterat
 
                 # Step 2: Compare with labels and calculate accuracy
                 total_correct += (preds == labels).sum().item()
-                total_samples +=  labels.size(0)
+                total_samples += labels.size(0)
             total_accuracy = total_correct / total_samples
 
             writer.add_scalar('validation_loss', total_loss, iteration)
             writer.add_scalar('validation_loss_mean', total_loss / len(validation_loader), iteration)
             writer.add_scalar('validation_accuracy', total_accuracy, iteration)
             print(
-                f"Finished validating dataset on rank {rank}: {total_loss / len(validation_loader)} -- {total_accuracy * 100 } %")
+                f"Finished validating dataset on rank {rank}: {total_loss / len(validation_loader)} -- {total_accuracy * 100} %")
         model.train()
     else:
         print("Skipping validation")
@@ -296,8 +302,8 @@ def train_model(rank, world_size):
             compression_contexts_by_method = {}
             sampler = DistributedSampler(DS, num_replicas=world_size, rank=rank)
             print(f"Loading loaders... {rank}")
-            dataloader = DataLoader(DS, batch_size=BATCH_SIZE, sampler=sampler, num_workers=4, pin_memory=GPU_AVAILABLE)
-            validation_loader = DataLoader(VALIDATION_DS, batch_size=VALIDATION_BATCH, num_workers=4,
+            dataloader = DataLoader(DS, batch_size=BATCH_SIZE, sampler=sampler, num_workers=NUM_WORKERS, pin_memory=GPU_AVAILABLE)
+            validation_loader = DataLoader(VALIDATION_DS, batch_size=VALIDATION_BATCH, num_workers=NUM_WORKERS,
                                            pin_memory=GPU_AVAILABLE) if rank == 0 else None
             print(f"Loaders loaded... {rank}")
             _model, criterion, optimizer_params = MODEL_CREATOR()
@@ -318,14 +324,13 @@ def train_model(rank, world_size):
                 #     f"elements={bucket.buffer().numel()}"
                 # )
                 gradient_tensor = bucket.buffer()
-                param_config,compression_method_creator = COMPRESSION_CONFIG
+                param_config, compression_method_creator = COMPRESSION_CONFIG
                 no_compression = False
                 method_by_param = False  # True #Powersgd
                 square_original_matrix = False
                 get_reconstruction_metric = True
                 if param_config == "by_param":
                     method_by_param = True
-
 
                 python_state.add_vector_size(gradient_tensor)
                 world_size = dist.get_world_size()
@@ -340,9 +345,11 @@ def train_model(rank, world_size):
                         total_elements = param.numel()
                         param_key = param.data_ptr()
                         if param_key not in compression_contexts_by_method:
-                            compression_contexts_by_method[param_key]=compression_python.CompressionFilterCtx(WORLD_SIZE)
+                            compression_contexts_by_method[param_key] = compression_python.CompressionFilterCtx(
+                                WORLD_SIZE)
                             print(f"Initialized context for powersgd on param: {param.data_ptr()}")
-                        tensor_elements = gradient_tensor[current_index_in_buffer:current_index_in_buffer + total_elements]
+                        tensor_elements = gradient_tensor[
+                            current_index_in_buffer:current_index_in_buffer + total_elements]
                         matrix_to_compress = tensor_elements.view(original_shape)
                         if matrix_to_compress.dim() == 4:
                             matrix_to_compress = matrix_to_compress.view(original_shape[0], -1)
@@ -359,19 +366,20 @@ def train_model(rank, world_size):
                 else:
                     result = compression_method_creator(gradient_tensor).run(gradient_tensor, compression_ctx)
                     fut.set_result(result)
-                if  get_reconstruction_metric:
-                    #print("Reconstruction metric computing")
+                if get_reconstruction_metric:
+                    # print("Reconstruction metric computing")
                     averaged_result_of_gradient_tensor = average_tensor_on_the_network(tensor_copy)
                     reconstructed_tensor = fut.wait()
-                    python_state.accumulate_reconstruction_error(reconstructed_tensor, averaged_result_of_gradient_tensor)
+                    python_state.accumulate_reconstruction_error(reconstructed_tensor,
+                                                                 averaged_result_of_gradient_tensor)
                     python_state.accumulate_reconstruction_power(reconstructed_tensor)
-                    #print("Reconstruction metric computed")
-                    #print(reconstructed_tensor[:10])
-                    #print(averaged_result_of_gradient_tensor[:10])
+                    # print("Reconstruction metric computed")
+                    # print(reconstructed_tensor[:10])
+                    # print(averaged_result_of_gradient_tensor[:10])
 
                 return fut
 
-            def average_tensor_on_the_network(gradient_tensor) :
+            def average_tensor_on_the_network(gradient_tensor):
                 averaged_tensor = gradient_tensor
                 dist.all_reduce(
                     averaged_tensor,
@@ -407,25 +415,31 @@ def train_model(rank, world_size):
                         writer.add_scalar('loss', report_loss / REPORT_LOSS_EVERY, iteration)
                         writer.add_scalar('transferred_kb', compression_python.get_bytes() / 1024., iteration)
                         writer.add_scalar('original_kb', python_state.get_original_bytes() / 1024., iteration)
-                        if(python_state.get_reconstruction_norm_l2() is not None):
-                            writer.add_scalar('reconstruction_norm_l2', python_state.get_reconstruction_norm_l2(), iteration)
-                            writer.add_scalar('reconstruction_norm_l1', python_state.get_reconstruction_norm_l1(), iteration)
-                            writer.add_scalar('reconstruction_norm_l0', python_state.get_reconstruction_norm_l0(), iteration)
-                            writer.add_scalar('reconstruction_norm_inf', python_state.get_reconstruction_norm_inf(), iteration)
+                        if (python_state.get_reconstruction_norm_l2() is not None):
+                            writer.add_scalar('reconstruction_norm_l2', python_state.get_reconstruction_norm_l2(),
+                                              iteration)
+                            writer.add_scalar('reconstruction_norm_l1', python_state.get_reconstruction_norm_l1(),
+                                              iteration)
+                            writer.add_scalar('reconstruction_norm_l0', python_state.get_reconstruction_norm_l0(),
+                                              iteration)
+                            writer.add_scalar('reconstruction_norm_inf', python_state.get_reconstruction_norm_inf(),
+                                              iteration)
                         if python_state.get_reconstruction_error_l2() is not None:
-                            writer.add_scalar('reconstruction_error_l2', python_state.get_reconstruction_error_l2(), iteration)
-                            writer.add_scalar('reconstruction_error_l1', python_state.get_reconstruction_error_l1(), iteration)
+                            writer.add_scalar('reconstruction_error_l2', python_state.get_reconstruction_error_l2(),
+                                              iteration)
+                            writer.add_scalar('reconstruction_error_l1', python_state.get_reconstruction_error_l1(),
+                                              iteration)
 
                         # print(
                         #     f"Megabytes {compression_python.get_bytes()}/{python_state.get_original_bytes()}({compression_python.get_bytes() / python_state.get_original_bytes()})")
-                        #print(f"Model loss {report_loss / REPORT_LOSS_EVERY})")
+                        # print(f"Model loss {report_loss / REPORT_LOSS_EVERY})")
                         report_loss = 0
                         compression_python.reset_network_stats()
                         python_state.reset_network_stats()
 
                     if iteration % PRINT_LOSS_EVERY == 0:
                         print(f"Loss of {epoch_iteration}/{epoch} ({iteration})): {running_loss / PRINT_LOSS_EVERY}")
-                        validate_model(ddp_model, validation_loader, criterion, writer, rank, iteration,epoch)
+                        validate_model(ddp_model, validation_loader, criterion, writer, rank, iteration, epoch)
                         running_loss = 0
 
         print(f"Finished running basic DDP example on rank {rank}.")
@@ -435,14 +449,12 @@ def train_model(rank, world_size):
         cleanup()
 
 
-
-
 if __name__ == "__main__":
     try:
         mp.spawn(train_model,
                  args=(WORLD_SIZE,),
                  nprocs=WORLD_SIZE,
-                join=True)
+                 join=True)
     except:
         print("Failed to spawn")
     finally:
