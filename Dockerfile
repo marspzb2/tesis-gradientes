@@ -61,7 +61,7 @@ WORKDIR /app
 RUN python -m pip install --no-cache-dir \
         --index-url "${PYTORCH_INDEX_URL}" \
         torch==2.9.1 \
-        torchvision==0.24.1 \
+        torchvision==0.24.1
 
 COPY pyproject.toml ./
 
