@@ -53,6 +53,8 @@ BACKEND = 'nccl' if GPU_AVAILABLE else 'gloo'
 # BACKEND = 'gloo'
 COMPRESSION_NAME = os.environ.get("COMPRESSION_SCHEME") or "none"
 
+OUTPUT_NAME=os.environ.get("OUTPUT_NAME",f"{COMPRESSION_NAME}")
+
 seed = int(os.environ.get('SEED', 42))
 
 random.seed(seed)
@@ -295,7 +297,7 @@ def train_model(rank, world_size):
 
         setup_node(rank, world_size)
         print(f"Node setted up: {rank}")
-        with SummaryWriter(f"{OUT_FOLDER}/summary-{rank}") as writer:
+        with SummaryWriter(f"{OUT_FOLDER}/summary-{rank}/{OUTPUT_NAME}") as writer:
             iteration = 0
             compression_ctx = compression_python.CompressionFilterCtx(WORLD_SIZE)
             python_state = CompressionPythonState()
