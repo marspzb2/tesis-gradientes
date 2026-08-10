@@ -14,3 +14,5 @@ export import MatrixMultiplyFilter;
 export import OrthogonalizationFilter;
 export import AllReduceFilter;
 export import AllGatherFilter;
+export import ErrorFeedbackFilters;
+export import SaveMatrixFilter;

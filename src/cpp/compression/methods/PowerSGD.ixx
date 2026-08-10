@@ -26,12 +26,23 @@ export namespace compression::methods {
         explicit PowerSGD(uint rank)
             : rank(rank) {
             auto chain =
-                    MatrixInitializationFilter<InputT, int64_t>::initialize_uniform_matrix("Q", {-2, rank})
-                    >> MatOperationFilter<InputT, int64_t>::mat_dot("ORIGINAL", "Q", "P")
+                    std::make_unique<ApplyErrorFeedback<InputT, int64_t> >()
+                    >> std::make_unique<SaveMatrixFilter<InputT, int64_t> >("ORIGINAL")
+                    >> MatrixInitializationFilter<InputT, int64_t>::initialize_uniform_matrix("Q", {-2, rank})
+                    >> MatOperationFilter<InputT, int64_t>::mat_dot("INPUT", "Q", "P")
                     >> std::make_unique<AllReduceFilter<InputT, int64_t> >("P")
                     >> std::make_unique<OrthogonalizationFilter<InputT, int64_t> >("P_hat")
                     >> MatOperationFilter<InputT, int64_t>::mat_dot("ORIGINAL", "P_hat", "Q",
                                                                     MatrixTransformType::TRANSPOSE)
+                    >> std::make_unique<SaveErrorFeedback<InputT, int64_t> >(
+                        [](const Tensor &tensor, const Tensor &metadata, CompressionFilterCtx &ctx) {
+                            auto decompressor =
+                                    MatOperationFilter<InputT, int64_t>::mat_dot(
+                                        "P_hat", "Q", "",
+                                        MatrixTransformType::NONE,
+                                        MatrixTransformType::TRANSPOSE);
+                            return std::get<0>(decompressor->do_filter(tensor, metadata, ctx));
+                        })
                     >> std::make_unique<AllReduceFilter<InputT, int64_t> >("Q")
                     //decompress
                     >> MatOperationFilter<InputT, int64_t>::mat_dot("P_hat", "Q", "", MatrixTransformType::NONE,
