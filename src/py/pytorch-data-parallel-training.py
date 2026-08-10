@@ -27,8 +27,7 @@ from math import ceil
 import os
 import random
 from time import sleep
-
-# print(torch.__version__)
+import warnings
 import compression_python
 from torch.utils.data.distributed import DistributedSampler
 
@@ -66,6 +65,11 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed_all(seed)
 
 
+warnings.filterwarnings(
+    "ignore",
+    category=np.exceptions.VisibleDeprecationWarning,
+    module=r"torchvision\.datasets\.cifar",
+)
 def alex_net_creator():
     transform = transforms.Compose([
         transforms.Resize((227, 227)),
