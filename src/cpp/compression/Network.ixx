@@ -105,31 +105,48 @@ public:
             return all_gather_same_size(std::forward<Args>(args)...);
         } else {
             std::vector<torch::Tensor> send_tensors{std::forward<Args>(args)...};
-            std::vector<std::vector<torch::Tensor> > all_tensors(send_tensors.size());
+            if (send_tensors.size() != 1) {
+                throw std::invalid_argument(
+                    "Variable-size all_gather supports one tensor per call");
+            }
+
+            torch::Tensor send_tensor = send_tensors.front();
+            if (send_tensor.dim() != 1) {
+                throw std::invalid_argument(
+                    "Variable-size all_gather expects a 1D tensor");
+            }
+
             int world_size = process_group->getSize();
 
-            auto [work,result_tensors] = this->all_gather_sizes(std::forward<Args>(args)...);
-            work->wait();
-            int send_idx = 0;
+            auto [size_work, gathered_sizes] =
+                this->all_gather_sizes(send_tensor);
+            size_work->wait();
 
-            for (const std::vector<torch::Tensor> &received_sizes: result_tensors) {
-                auto tensor_options = send_tensors[send_idx].options();
-                all_tensors[send_idx] = std::vector<torch::Tensor>();
-                all_tensors[send_idx].reserve(world_size);
-                for (const torch::Tensor &received_size: received_sizes) {
-                    torch::Tensor cpu_size_tensor = received_size.to(torch::kCPU);
-                    auto sizes_accessor = cpu_size_tensor.accessor<int64_t, 1>();
-                    std::vector<int64_t> shape;
-                    shape.reserve(sizes_accessor.size(0));
-                    for (int64_t k = 0; k < sizes_accessor.size(0); k++) {
-                        shape.push_back(sizes_accessor[k]);
-                    }
-                    all_tensors[send_idx].push_back(torch::empty(shape, tensor_options));
-                }
-                send_idx++;
+            std::vector<int64_t> sizes;
+            sizes.reserve(world_size);
+            int64_t max_size = 0;
+            for (const torch::Tensor &size_tensor: gathered_sizes.front()) {
+                int64_t size = size_tensor[0].item<int64_t>();
+                sizes.push_back(size);
+                max_size = std::max(max_size, size);
             }
-            this->add_bytes(send_tensors);
-            return std::make_tuple(this->_all_gather(send_tensors, all_tensors), all_tensors);
+
+            torch::Tensor padded = torch::zeros({max_size}, send_tensor.options());
+            padded.slice(0, 0, send_tensor.numel()).copy_(send_tensor);
+
+            std::vector<torch::Tensor> padded_inputs{padded};
+            auto gathered_padded =
+                make_send_copies_same_size(padded_inputs, world_size);
+            auto work = this->_all_gather(padded_inputs, gathered_padded);
+            work->wait();
+
+            for (int rank = 0; rank < world_size; ++rank) {
+                gathered_padded[0][rank] =
+                    gathered_padded[0][rank].slice(0, 0, sizes[rank]);
+            }
+
+            this->add_bytes(padded_inputs);
+            return std::make_tuple(work, std::move(gathered_padded));
         }
     }
 
