@@ -48,7 +48,7 @@ RUN CMAKE_PREFIX_PATH="$(python -c \
         'import os, pybind11, torch; print(os.pathsep.join((torch.utils.cmake_prefix_path, pybind11.get_cmake_dir())))')" \
     cmake --preset docker
 
-RUN cmake --build --preset docker
+RUN cmake --build --preset build-docker
 
 
 FROM python:${PYTHON_VERSION}-slim AS runtime

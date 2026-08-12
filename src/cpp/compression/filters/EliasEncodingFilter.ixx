@@ -16,7 +16,7 @@ export
         template<typename InputT, typename OutputT, typename EncodingMetaT>
         class EliasEncodingForwardFilter : public base::CompressionFilter<InputT, OutputT, int64_t, EncodingMetaT> {
         public:
-            Tensor internal_do_filter(const Tensor &tensor, const std::optional<long long> &metadata,
+            Tensor internal_do_filter(const Tensor &tensor, const std::optional<int64_t> &metadata,
                                       base::NoValue *state, base::CompressionFilterCtx &ctx) override {
                 assert(tensor.sizes().size()==1);
                 Tensor result = torch::zeros_like(tensor,
@@ -57,7 +57,7 @@ export
             }
 
             Tensor internal_metadata(const Tensor &tensor, const Tensor &meta_tensor,
-                                     const std::optional<long long> &metadata, base::NoValue *state,
+                                     const std::optional<int64_t> &metadata, base::NoValue *state,
                                      base::CompressionFilterCtx &ctx) override {
                 return torch::cat({
                     torch::tensor({

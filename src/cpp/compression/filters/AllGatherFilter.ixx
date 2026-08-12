@@ -37,8 +37,19 @@ export
                 //if (1 > 0) {
                 //    return tensor;
                 //}
-                auto [work,vectors] = ctx.network().get().all_gather(false, tensor, metadata);
-                work->wait();
+                auto [tensor_work, gathered_tensors] =
+                    ctx.network().get().all_gather(false, tensor);
+                auto [metadata_work, gathered_metadata] =
+                    ctx.network().get().all_gather(false, metadata);
+
+                tensor_work->wait();
+                metadata_work->wait();
+
+                std::vector<std::vector<Tensor> > vectors{
+                    std::move(gathered_tensors.front()),
+                    std::move(gathered_metadata.front())
+                };
+
                 auto [reduced_tensor,reduced_meta] = reduction_strategy->reduce(vectors, ctx);
 
 
