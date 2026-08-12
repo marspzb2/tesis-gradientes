@@ -22,6 +22,7 @@ import QSGD;
 
 using compression::methods::DoublePowerSGD;
 using compression::methods::DoubleQSGD;
+using compression::methods::FloatQSGD;
 namespace py = pybind11;
 
 
@@ -39,9 +40,9 @@ PYBIND11_MODULE(compression_python, m) {
             .def(py::init<int>())
             .def("run", &DoublePowerSGD::doMethod);
 
-    py::class_<DoubleQSGD>(m, "QSGD")
+    py::class_<FloatQSGD>(m, "QSGD")
             .def(py::init<int,bool>())
-            .def("run", &DoubleQSGD::doMethod);
+            .def("run", &FloatQSGD::doMethod);
 
     py::class_<compression::methods::NoCompressionMethod>(m, "NoCompression")
             .def(py::init<>())

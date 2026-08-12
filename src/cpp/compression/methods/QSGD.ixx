@@ -65,4 +65,14 @@ export namespace compression::methods {
         }
 
     };
+
+    class FloatQSGD : public BaseQSGDMethod<float, int64_t> {
+    public:
+        explicit FloatQSGD(int levels = 8, bool dither = true)
+            : BaseQSGDMethod<float, int64_t>(
+                regular_lattice_quantization_filter<float, int64_t>(1. / levels, dither),
+                regular_lattice_dequantize_filter<float, int64_t>(1. / levels)) {
+        }
+
+    };
 }
