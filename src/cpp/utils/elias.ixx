@@ -47,21 +47,22 @@ namespace compression::utils {
     std::tuple<uint, uint> elias_omega_decode(const CodeT *values, int64_t start_idx) {
         uint value = 1;
         int64_t index = start_idx;
-        int block_size = sizeof(CodeT)*8;
+        int block_size = sizeof(CodeT) * 8;
         while (bit_at_position<CodeT>(values, index, block_size) != 0) {
             //If the next bit is a "1" then read it plus N more bits, and use that binary number as the new value of N. Go back to Step 2.
-            uint oldVal= value;
-            std::tie(value, index) = bits_chunk(values, index, value+1, block_size);
-            std::cout <<"Reading" <<oldVal << " from index "<<index%block_size<<",value is" << value <<" on " <<std::format("'{:b}'",values[index/block_size])<<std::endl;
+            uint oldVal = value;
+            std::tie(value, index) = bits_chunk(values, index, value + 1, block_size);
+            std::cout << "Reading" << oldVal << " from index " << index % block_size << ",value is" << value << " on "
+                    << std::format("'{:b}'", values[index / block_size]) << std::endl;
             //index++;
         }
         uint read_length = (index - start_idx) + 1;
-        std::cout<<std::format("Tensor value: {:b}. Original idx: {:d}.Index inf value: {:d}. Total read: {:d}\n" ,
-            values[index/block_size],start_idx,
-            start_idx%block_size,
-            read_length)<<std::endl;
-        std::cout<<"Omega decode: "<<value <<"("<<read_length<<") of "<<std::format("{:b}\n",(values[start_idx/block_size]>>(block_size-start_idx%block_size)) & ((1<<(index-start_idx+1))-1))
-        <<std::endl;
+        //        std::cout<<std::format("Tensor value: {:b}. Original idx: {:d}.Index inf value: {:d}. Total read: {:d}\n" ,
+        //          values[index/block_size],start_idx,
+        //        start_idx%block_size,
+        //      read_length)<<std::endl;
+        //std::cout<<"Omega decode: "<<value <<"("<<read_length<<") of "<<std::format("{:b}\n",(values[start_idx/block_size]>>(block_size-start_idx%block_size)) & ((1<<(index-start_idx+1))-1))
+        //<<std::endl;
 
 
         return std::make_tuple(value, read_length);

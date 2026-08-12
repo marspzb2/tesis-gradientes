@@ -45,10 +45,17 @@ export
                 tensor_work->wait();
                 metadata_work->wait();
 
-                std::vector<std::vector<Tensor> > vectors{
-                    std::move(gathered_tensors.front()),
-                    std::move(gathered_metadata.front())
-                };
+                const auto &tensors_by_rank = gathered_tensors.front();
+                const auto &metadata_by_rank = gathered_metadata.front();
+
+                std::vector<std::vector<Tensor> > vectors;
+                vectors.reserve(tensors_by_rank.size());
+                for (std::size_t rank = 0; rank < tensors_by_rank.size(); ++rank) {
+                    vectors.push_back({
+                        tensors_by_rank[rank],
+                        metadata_by_rank[rank]
+                    });
+                }
 
                 auto [reduced_tensor,reduced_meta] = reduction_strategy->reduce(vectors, ctx);
 
