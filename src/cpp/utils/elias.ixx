@@ -52,8 +52,8 @@ namespace compression::utils {
             //If the next bit is a "1" then read it plus N more bits, and use that binary number as the new value of N. Go back to Step 2.
             uint oldVal = value;
             std::tie(value, index) = bits_chunk(values, index, value + 1, block_size);
-            std::cout << "Reading" << oldVal << " from index " << index % block_size << ",value is" << value << " on "
-                    << std::format("'{:b}'", values[index / block_size]) << std::endl;
+           // std::cout << "Reading" << oldVal << " from index " << index % block_size << ",value is" << value << " on "
+            //        << std::format("'{:b}'", values[index / block_size]) << std::endl;
             //index++;
         }
         uint read_length = (index - start_idx) + 1;
