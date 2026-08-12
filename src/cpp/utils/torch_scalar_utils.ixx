@@ -48,7 +48,6 @@ export
             static constexpr torch::ScalarType value = torch::kUInt8;
         };
 
-        // 3. La función wrapper que vas a usar en tu código
         template<typename T>
         [[nodiscard]] constexpr torch::ScalarType get_torch_dtype() noexcept {
             return torch_type_traits<T>::value;

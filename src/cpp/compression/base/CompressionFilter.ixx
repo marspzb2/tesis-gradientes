@@ -4,6 +4,7 @@
 module;
 #include <torch/torch.h>
 #include <spdlog/spdlog.h>
+#include <functional>
 #include <fmt/core.h>
 
 export module CompressionFilter;
@@ -241,38 +242,58 @@ export
                     typename FilterT::StateType> >
         class FilterReductionStrategy : public ReductionStrategy {
             using OutputValueT = typename FilterT::OutputType;
+            using FilterResult = std::tuple<Tensor, Tensor>;
+            using CombineFunction = std::function<FilterResult(const FilterResult &, const FilterResult &,
+                                                               const std::vector<std::vector<Tensor> > &values)>;
+            using EndTransformFn = std::function<FilterResult(const FilterResult &,
+                                                              const std::vector<std::vector<Tensor> > &values)>;
 
         private:
             std::unique_ptr<FilterT> filter;
+            CombineFunction combine;
+            EndTransformFn end_transform;
 
         public:
-            explicit FilterReductionStrategy(
-                std::unique_ptr<FilterT> filter)
-                : filter(std::move(filter)) {
+            explicit FilterReductionStrategy(std::unique_ptr<FilterT> filter,
+                                             CombineFunction combine,
+                                             EndTransformFn end_transform
+            )
+                : filter(std::move(filter)), combine(combine), end_transform(end_transform) {
             }
 
             std::tuple<Tensor, Tensor> reduce(const std::vector<std::vector<Tensor> > &values,
                                               CompressionFilterCtx &ctx) override {
-                Tensor result;
-                Tensor result_metadata;
+                if (values.empty()) {
+                    throw std::invalid_argument("Empty vector");
+                }
                 bool first = true;
+                FilterResult result;
 
                 for (auto tensors: values) {
                     Tensor value_tensor = tensors.at(0);
                     Tensor value_metadata = tensors.at(1);
-                    auto [filtered_value,filtered_meta] = filter->do_filter(value_tensor, value_metadata, ctx);
+                    auto current_value = filter->do_filter(value_tensor, value_metadata, ctx);
                     if (first) {
-                        result = filtered_meta;
-                        result_metadata = filtered_meta;
+                        result = current_value;
                         first = false;
                     } else {
-                        result += filtered_meta;
-                        result_metadata += filtered_meta;
+                        result = combine(result, current_value, values);
                     }
                 }
-                return std::make_tuple(result * static_cast<OutputValueT>(1. / values.size()),
-                                       result_metadata * static_cast<OutputValueT>(1. / values.size()));
+                return end_transform(result, values);
             };
+
+            static std::unique_ptr<FilterReductionStrategy> meanReductionStrategy(std::unique_ptr<FilterT> filter) {
+                return std::make_unique<FilterReductionStrategy<FilterT> >(
+                    std::move(filter),
+                    [](const FilterResult &a, const FilterResult &b,
+                       const std::vector<std::vector<Tensor> > &values) {
+                        return std::make_tuple(std::get<0>(a) + std::get<0>(b), std::get<1>(a));
+                    },
+                    [](const FilterResult &a, const std::vector<std::vector<Tensor> > &values) {
+                        return std::make_tuple(std::get<0>(a) / (1. * values.size()), std::get<1>(a));
+                    });
+            }
         };
     }
 }

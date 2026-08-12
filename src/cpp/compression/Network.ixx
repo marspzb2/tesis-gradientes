@@ -28,7 +28,7 @@ export class Network {
 private:
     c10::intrusive_ptr<c10d::ProcessGroup> process_group;
     std::optional<Topology> topology;
-    uint64_t bytes;
+    uint64_t bytes = 0;
 
     Network() = default;
 
@@ -94,7 +94,7 @@ public:
         int world_size = process_group->getSize();
 
         std::vector<std::vector<torch::Tensor> > all_tensors = make_send_copies_same_size(sizes_tensors, world_size);
-        this->add_bytes(all_tensors);
+        this->add_bytes(sizes_tensors);
         return std::make_tuple(this->_all_gather(sizes_tensors, all_tensors), all_tensors);
     }
 
@@ -105,16 +105,15 @@ public:
             return all_gather_same_size(std::forward<Args>(args)...);
         } else {
             std::vector<torch::Tensor> send_tensors{std::forward<Args>(args)...};
-            std::vector<std::vector<torch::Tensor> > all_tensors;
-            all_tensors.reserve(send_tensors.size());
+            std::vector<std::vector<torch::Tensor> > all_tensors(send_tensors.size());
             int world_size = process_group->getSize();
 
             auto [work,result_tensors] = this->all_gather_sizes(std::forward<Args>(args)...);
             work->wait();
             int send_idx = 0;
-            auto tensor_options = send_tensors[send_idx].options();
 
             for (const std::vector<torch::Tensor> &received_sizes: result_tensors) {
+                auto tensor_options = send_tensors[send_idx].options();
                 all_tensors[send_idx] = std::vector<torch::Tensor>();
                 all_tensors[send_idx].reserve(world_size);
                 for (const torch::Tensor &received_size: received_sizes) {
@@ -129,7 +128,7 @@ public:
                 }
                 send_idx++;
             }
-            this->add_bytes(all_tensors);
+            this->add_bytes(send_tensors);
             return std::make_tuple(this->_all_gather(send_tensors, all_tensors), all_tensors);
         }
     }
@@ -137,7 +136,9 @@ public:
     template<typename... Args>
     std::tuple<c10::intrusive_ptr<c10d::Work>, std::vector<std::vector<torch::Tensor> > > all_gather_sizes(
         Args &&... tensors) {
-        std::vector<torch::Tensor> sizes_tensors{torch::tensor(tensors.sizes(), torch::kLong)...};
+        std::vector<torch::Tensor> sizes_tensors{
+            torch::tensor(tensors.sizes(), torch::TensorOptions().device(tensors.device()).dtype(torch::kLong))...
+        };
         this->add_bytes(sizes_tensors);
         int world_size = process_group->getSize();
         std::vector<std::vector<torch::Tensor> > all_tensors = make_send_copies_same_size(sizes_tensors, world_size);

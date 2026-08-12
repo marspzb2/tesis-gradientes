@@ -32,15 +32,15 @@
     ],
     "buildPresets": [
         {
-            "name": "default",
+            "name": "build-default",
             "configurePreset": "default"
         },
         {
-            "name": "debug",
+            "name": "build-debug",
             "configurePreset": "debug"
         },
         {
-            "name": "docker",
+            "name": "build-docker",
             "configurePreset": "docker",
             "targets": [
                 "compression_python"

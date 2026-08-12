@@ -20,10 +20,12 @@ export
                                       base::NoValue *state, base::CompressionFilterCtx &ctx) override {
                 assert(tensor.sizes().size()==1);
                 Tensor result = torch::zeros_like(tensor,
-                                                  torch::TensorOptions(tensor.options()).dtype(
-                                                      utils::get_torch_dtype<OutputT>()));
+                                                  torch::TensorOptions(tensor.options())
+                                                  .dtype(utils::get_torch_dtype<OutputT>())
+                                                  .device(torch::kCPU));
 
-                InputT *data = tensor.to(torch::kCPU).contiguous().data_ptr<InputT>();
+                auto tensor_cpu = tensor.to(torch::kCPU).contiguous();
+                InputT *data = tensor_cpu.data_ptr<InputT>();
                 OutputT *result_ptr = result.data_ptr<OutputT>();
 
 
@@ -46,10 +48,11 @@ export
                 }
 
                 return result.slice(
-                    0, 0, static_cast<int>(ceil(bit_idx * 1. / utils::get_block_size<OutputT>(result_ptr))));
+                    0, 0, static_cast<int>(ceil(bit_idx * 1. / utils::get_block_size<OutputT>(result_ptr))))
+                .to(tensor.device());
             }
 
-            std::optional<int64_t> parse_metadata(const Tensor &tensor,const Tensor & meta_tensor) override {
+            std::optional<int64_t> parse_metadata(const Tensor &tensor, const Tensor &meta_tensor) override {
                 return std::optional(tensor.numel());
             }
 
@@ -74,7 +77,8 @@ export
                                       base::CompressionFilterCtx &ctx) override {
                 Tensor result = torch::zeros(metadata.value(),
                                              torch::TensorOptions().dtype(utils::get_torch_dtype<InputT>()));
-                OutputT *data = tensor.to(torch::kCPU).contiguous().data_ptr<OutputT>();
+                auto data_cpu_tensor = tensor.to(torch::kCPU).contiguous();
+                OutputT *data = data_cpu_tensor.data_ptr<OutputT>();
                 InputT *components = result.data_ptr<InputT>();
                 int bit_idx = 0;
 
@@ -82,10 +86,14 @@ export
                     int sign = utils::bit_at_position(data, bit_idx) == 1 ? -1 : 1;
                     bit_idx++;
                     auto [decoded_component,read_length] = utils::elias_omega_decode(data, bit_idx);
-                    components[comp] = static_cast<InputT>(decoded_component) * sign;
+                    if (sign > 0) {
+                        components[comp] = static_cast<InputT>(decoded_component - 1) * sign;
+                    } else {
+                        components[comp] = static_cast<InputT>(decoded_component) * sign;
+                    }
                     bit_idx += read_length;
                 }
-                return result;
+                return result.to(tensor.device());
             }
 
             Tensor internal_metadata(const Tensor &tensor, const Tensor &meta_tensor,

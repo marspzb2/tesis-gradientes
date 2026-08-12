@@ -34,8 +34,9 @@ int main() {
                                    std::make_unique<RegularQuantization<double, int64_t> >(lattice_size, true)))
                            >> std::make_unique<EliasEncodingForwardFilter<int64_t, int64_t, int64_t> >()
                            >> std::make_unique<AllGatherFilter<int64_t, int64_t> >("Lala",
-                               std::make_unique<FilterReductionStrategy<decltype(qsgd_decoder)::element_type> >(
-                                   std::move(qsgd_decoder)));
+                               FilterReductionStrategy<
+                                   decltype(qsgd_decoder)::element_type
+                               >::meanReductionStrategy(std::move(qsgd_decoder)));
 
 
     //For each parameter’s gradient M ∈ R

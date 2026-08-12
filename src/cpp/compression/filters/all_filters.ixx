@@ -16,3 +16,5 @@ export import AllReduceFilter;
 export import AllGatherFilter;
 export import ErrorFeedbackFilters;
 export import SaveMatrixFilter;
+export import RegularLatticeQuantizationFilters;
+

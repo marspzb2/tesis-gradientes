@@ -42,7 +42,7 @@ except:
 NUM_WORKERS = int(os.environ.get("NUM_WORKERS", min(16, max(4, CPUS_AVAILABLE // WORLD_SIZE - 1))))
 MODEL_NAME = "alexnet"
 DATASET_NAME = "cifar10"
-REPORT_LOSS_EVERY = 10
+REPORT_LOSS_EVERY = 1
 PRINT_LOSS_EVERY = 300
 EPOCHS = 10
 BATCH_SIZE = 32
@@ -51,8 +51,9 @@ GPU_AVAILABLE = torch.cuda.is_available()
 BACKEND = 'nccl' if GPU_AVAILABLE else 'gloo'
 # BACKEND = 'gloo'
 COMPRESSION_NAME = os.environ.get("COMPRESSION_SCHEME") or "none"
-
-OUTPUT_NAME=os.environ.get("OUTPUT_NAME",f"{COMPRESSION_NAME}")
+ERROR_FEEDBACK_ENABLED = os.environ.get("ERROR_FEEDBACK_ENABLED", "false").lower() == "true"
+WARMUP_ENABLED = os.environ.get("WARMUP_ENABLED", "false").lower() == "true"
+METHOD_PARAMS_NAMES = None
 
 seed = int(os.environ.get('SEED', 42))
 
@@ -62,14 +63,15 @@ torch.manual_seed(seed)
 
 if torch.cuda.is_available():
     torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
+torch.cuda.manual_seed_all(seed)
 
 warnings.filterwarnings(
     "ignore",
     category=np.exceptions.VisibleDeprecationWarning,
     module=r"torchvision\.datasets\.cifar",
 )
+
+
 def alex_net_creator():
     transform = transforms.Compose([
         transforms.Resize((227, 227)),
@@ -88,24 +90,28 @@ def alex_net_creator():
 
 
 COMPRESSION_CONFIG = None
+
 if COMPRESSION_NAME.lower() == "powersgd":
-    COMPRESSION_CONFIG = "by_param", lambda tensor: compression_python.PowerSGD(
-        int(os.environ.get("POWER_SGD_RANK", 5)))
+    POWER_SGD_RANK = int(os.environ.get("POWER_SGD_RANK", 5))
+    POWER_SGD_ITERATIONS = int(os.environ.get("POWER_SGD_ITERATIONS", 1))
+    POWER_SGD_PARAM_HANDLE = os.environ.get("POWER_SGD_PARAM_HANDLE", "by_param")
+    COMPRESSION_CONFIG = POWER_SGD_PARAM_HANDLE, lambda tensor: compression_python.PowerSGD(POWER_SGD_RANK)
+    METHOD_PARAMS_NAMES = f"r{POWER_SGD_RANK}i{POWER_SGD_ITERATIONS}p{POWER_SGD_PARAM_HANDLE}"
 elif COMPRESSION_NAME.lower() == "none":
     COMPRESSION_CONFIG = "whole", lambda tensor: compression_python.NoCompression()
+elif COMPRESSION_NAME.lower() == "qsgd":
+    QSGD_LEVELS = int(os.environ.get("QSGD_LEVELS", 8))
+    QSGD_DITHER = os.environ.get("QSGD_DITHERING_DISABLED", "false") != "true"
+    COMPRESSION_CONFIG = "whole", lambda tensor: compression_python.QSGD(QSGD_LEVELS, QSGD_DITHER)
+    METHOD_PARAMS_NAMES = f"q{QSGD_LEVELS}d{QSGD_DITHER}"
+
 else:
     raise RuntimeError("Error compression not supported")
 
-COMPRESSOR = None
-# COMPRESSOR = qsgd_cpu_extension.qsgd_cpp_compress_hook
+OUTPUT_NAME = os.environ.get(
+    "OUTPUT_NAME",
+    f"{COMPRESSION_NAME}{"-ef" if ERROR_FEEDBACK_ENABLED else ""}{"-warmup" if WARMUP_ENABLED else ""}{f"-{METHOD_PARAMS_NAMES}" if METHOD_PARAMS_NAMES else ""}")
 
-# if COMPRESSION_NAME == 'qsgd':
-#    COMPRESSOR = QSGD
-# elif COMPRESSION_NAME == 'no':
-#    COMPRESSOR = NoCompression
-# else:
-#    raise Exception(f"Compression not found {COMPRESSOR}")
-# COMPRESSOR = NoCompression
 MODEL_INFO = None
 if MODEL_NAME == "alexnet":
     MODEL_INFO = alex_net_creator
@@ -180,108 +186,119 @@ def validate_model(model, validation_loader, loss_function, writer, rank, iterat
     dist.barrier()
 
 
+class VectorTracker:
+    def __init__(self):
+        self.vector_l2_2 = None
+        self.vector_l1 = None
+        self.vector_l0 = None
+        self.vector_l_inf = None
+        self.bytes = 0
+
+    def track_vector_part(self, tensor):
+        self.bytes += tensor.numel() * tensor.dtype.itemsize
+
+        if tensor is not None and self.vector_l2_2 is not None:
+            self.vector_l2_2 += torch.sum(tensor.square())
+            self.vector_l1 += torch.sum(tensor.abs())
+            self.vector_l0 += torch.count_nonzero(tensor)
+            self.vector_l_inf = torch.maximum(self.vector_l_inf, torch.max(tensor.abs()))
+        elif self.vector_l2_2 is None:
+            self.vector_l2_2 = torch.sum(tensor.square())
+            self.vector_l1 = torch.sum(tensor.abs())
+            self.vector_l0 = torch.count_nonzero(tensor)
+            self.vector_l_inf = torch.max(tensor.abs())
+
+    def reset_vector_metrics(self):
+        self.reset_vector_norms()
+        self.bytes = 0
+
+    def reset_vector_norms(self):
+        self.vector_l2_2 = None
+        self.vector_l1 = None
+        self.vector_l0 = None
+        self.vector_l_inf = None
+
+    def reset_bytes(self):
+        self.bytes = 0
+
+    def add_summary_norms(self, writer, name_prefix, iteration):
+        writer.add_scalar(f'{name_prefix}_norm_l2', torch.sqrt(self.vector_l2_2), iteration)
+        writer.add_scalar(f'{name_prefix}_norm_l1', self.vector_l1, iteration)
+        writer.add_scalar(f'{name_prefix}_norm_l0', self.vector_l0, iteration)
+        writer.add_scalar(f'{name_prefix}_norm_linf', self.vector_l_inf, iteration)
+
+    def add_relative_norm(self, relative_to_tensor_tracker, writer, name_prefix, iteration):
+        writer.add_scalar(f'{name_prefix}_relative_l2',
+                          torch.sqrt(self.vector_l2_2 / relative_to_tensor_tracker.vector_l2_2)
+                          if relative_to_tensor_tracker.vector_l2_2 > 0 else -1, iteration)
+        writer.add_scalar(f'{name_prefix}_relative_l1',
+                          self.vector_l1 / relative_to_tensor_tracker.vector_l1
+                          if relative_to_tensor_tracker.vector_l1 > 0 else -1, iteration)
+
+    def add_summary_size_kb(self, writer, name_prefix, iteration):
+        writer.add_scalar(f'{name_prefix}_size_kb', self.bytes / 1024., iteration)
+
+    def add_summary_size_mb(self, writer, name_prefix, iteration):
+        writer.add_scalar(f'{name_prefix}_size_mb', self.bytes / (1024. ** 2), iteration)
+
+    def add_summary_size_gb(self, writer, name_prefix, iteration):
+        writer.add_scalar(f'{name_prefix}_size_gb', self.bytes / (1024. ** 3), iteration)
+
+
 class CompressionPythonState:
     def __init__(self):
-        self.original_bytes = 0
-        self.reset_reconstruction_error()
-        self.reset_reconstruction_power()
+        self.original_tracker = VectorTracker()
+        self.reconstructed_tracker = VectorTracker()
+        self.error_tracker = VectorTracker()
+        self.g_mean_tracker = VectorTracker()
+        self.trackers = [self.original_tracker, self.reconstructed_tracker, self.error_tracker, self.g_mean_tracker]
+        self.reconstructed_dot_g_mean = 0
 
-    def add_vector_size(self, vector):
-        self.original_bytes += vector.numel() * vector.dtype.itemsize
+    def add_original_vector(self, tensor):
+        self.original_tracker.track_vector_part(tensor)
+
+    def add_reconstructed_vector(self, tensor):
+        self.reconstructed_tracker.track_vector_part(tensor)
+
+    def add_error_vector(self, tensor):
+        self.error_tracker.track_vector_part(tensor)
+
+    def add_g_mean_vector(self, tensor):
+        self.g_mean_tracker.track_vector_part(tensor)
+
+    def add_cdot_reconstructed_original(self, reconstructed, g_mean):
+        self.reconstructed_dot_g_mean += torch.dot(reconstructed, g_mean)
 
     def get_original_bytes(self):
-        return self.original_bytes
+        return self.original_tracker.bytes
 
     def get_original_mb(self):
-        return self.original_bytes / 1024 / 1024
+        return self.original_tracker.bytes / 1024 / 1024
 
     def reset_network_stats(self):
-        self.original_bytes = 0
+        for tracker in self.trackers:
+            tracker.reset_bytes()
 
-    def accumulate_reconstruction_error(self, reconstructed, original):
-        error = reconstructed - original
-        bucket_l2_squared = torch.sum(error.square())
-        bucket_l1 = torch.sum(error.abs())
-        bucket_inf = torch.max(error.abs())
+    def get_reconstruction_cosine_dist(self):
+        if (not self.g_mean_tracker.vector_l2_2 or not self.reconstructed_tracker.vector_l2_2):
+            return -100000
+        return 1 - self.reconstructed_dot_g_mean / torch.sqrt(
+            self.g_mean_tracker.vector_l2_2 * self.reconstructed_tracker.vector_l2_2)
 
-        self.error_l2_squared = (
-            bucket_l2_squared
-            if self.error_l2_squared is None
-            else self.error_l2_squared + bucket_l2_squared
-        )
-        self.error_l1 = (
-            bucket_l1
-            if self.error_l1 is None
-            else self.error_l1 + bucket_l1
-        )
-        self.error_inf = (
-            bucket_inf
-            if self.error_inf is None
-            else torch.maximum(self.error_inf, bucket_inf)
-        )
+    def get_reconstruction_angle(self):
+        if (not self.g_mean_tracker.vector_l2_2 or not self.reconstructed_tracker.vector_l2_2):
+            return -100000
+        cos = self.reconstructed_dot_g_mean / torch.sqrt(
+            self.g_mean_tracker.vector_l2_2 * self.reconstructed_tracker.vector_l2_2)
+        if cos >= -100:
+            return torch.rad2deg(torch.acos(torch.clamp(cos, -1, 1)))
+        else:
+            return -100000
 
-    def get_reconstruction_error_inf(self):
-        return self.error_inf
-
-    def get_reconstruction_error_l2(self):
-        if self.error_l2_squared is None:
-            return None
-        return torch.sqrt(self.error_l2_squared)
-
-    def get_reconstruction_error_l1(self):
-        return self.error_l1
-
-    def reset_reconstruction_error(self):
-        self.error_l2_squared = None
-        self.error_l1 = None
-        self.error_inf = None
-
-    def get_reconstruction_norm_l2(self):
-        if self.reconstruction_norm_l2_squared is None:
-            return None
-        return torch.sqrt(self.reconstruction_norm_l2_squared)
-
-    def get_reconstruction_norm_l1(self):
-        return self.reconstruction_norm_l1
-
-    def get_reconstruction_norm_l0(self):
-        return self.reconstruction_norm_l0
-
-    def get_reconstruction_norm_inf(self):
-        return self.reconstruction_norm_inf
-
-    def accumulate_reconstruction_power(self, reconstructed):
-        bucket_l2_squared = torch.sum(reconstructed.square())
-        bucket_l1 = torch.sum(reconstructed.abs())
-        bucket_l0 = torch.count_nonzero(reconstructed)
-        bucket_inf = torch.max(reconstructed.abs())
-
-        self.reconstruction_norm_l2_squared = (
-            bucket_l2_squared
-            if self.reconstruction_norm_l2_squared is None
-            else self.reconstruction_norm_l2_squared + bucket_l2_squared
-        )
-        self.reconstruction_norm_l1 = (
-            bucket_l1
-            if self.reconstruction_norm_l1 is None
-            else self.reconstruction_norm_l1 + bucket_l1
-        )
-        self.reconstruction_norm_l0 = (
-            bucket_l0
-            if self.reconstruction_norm_l0 is None
-            else self.reconstruction_norm_l0 + bucket_l0
-        )
-        self.reconstruction_norm_inf = (
-            bucket_inf
-            if self.reconstruction_norm_inf is None
-            else torch.maximum(self.reconstruction_norm_inf, bucket_inf)
-        )
-
-    def reset_reconstruction_power(self):
-        self.reconstruction_norm_l2_squared = None
-        self.reconstruction_norm_l1 = None
-        self.reconstruction_norm_l0 = None
-        self.reconstruction_norm_inf = None
+    def reset_norms(self):
+        self.reconstructed_dot_g_mean = 0
+        for tracker in self.trackers:
+            tracker.reset_vector_norms()
 
 
 def train_model(rank, world_size):
@@ -297,7 +314,6 @@ def train_model(rank, world_size):
         torch.cuda.set_device(rank)
 
     try:
-        # node_compression = COMPRESSOR()
 
         setup_node(rank, world_size)
         print(f"Node setted up: {rank}")
@@ -308,7 +324,8 @@ def train_model(rank, world_size):
             compression_contexts_by_method = {}
             sampler = DistributedSampler(DS, num_replicas=world_size, rank=rank)
             print(f"Loading loaders... {rank}")
-            dataloader = DataLoader(DS, batch_size=BATCH_SIZE, sampler=sampler, num_workers=NUM_WORKERS, pin_memory=GPU_AVAILABLE)
+            dataloader = DataLoader(DS, batch_size=BATCH_SIZE, sampler=sampler, num_workers=NUM_WORKERS,
+                                    pin_memory=GPU_AVAILABLE)
             validation_loader = DataLoader(VALIDATION_DS, batch_size=VALIDATION_BATCH, num_workers=NUM_WORKERS,
                                            pin_memory=GPU_AVAILABLE) if rank == 0 else None
             print(f"Loaders loaded... {rank}")
@@ -330,6 +347,8 @@ def train_model(rank, world_size):
                 #     f"elements={bucket.buffer().numel()}"
                 # )
                 gradient_tensor = bucket.buffer()
+                python_state.add_original_vector(gradient_tensor)
+
                 param_config, compression_method_creator = COMPRESSION_CONFIG
                 no_compression = False
                 method_by_param = False  # True #Powersgd
@@ -338,7 +357,6 @@ def train_model(rank, world_size):
                 if param_config == "by_param":
                     method_by_param = True
 
-                python_state.add_vector_size(gradient_tensor)
                 world_size = dist.get_world_size()
                 fut = torch.futures.Future()
                 tensor_copy = gradient_tensor.clone()
@@ -376,9 +394,11 @@ def train_model(rank, world_size):
                     # print("Reconstruction metric computing")
                     averaged_result_of_gradient_tensor = average_tensor_on_the_network(tensor_copy)
                     reconstructed_tensor = fut.wait()
-                    python_state.accumulate_reconstruction_error(reconstructed_tensor,
+                    python_state.add_reconstructed_vector(reconstructed_tensor)
+                    python_state.add_g_mean_vector(averaged_result_of_gradient_tensor)
+                    python_state.add_error_vector(reconstructed_tensor - averaged_result_of_gradient_tensor)
+                    python_state.add_cdot_reconstructed_original(reconstructed_tensor,
                                                                  averaged_result_of_gradient_tensor)
-                    python_state.accumulate_reconstruction_power(reconstructed_tensor)
                     # print("Reconstruction metric computed")
                     # print(reconstructed_tensor[:10])
                     # print(averaged_result_of_gradient_tensor[:10])
@@ -410,8 +430,7 @@ def train_model(rank, world_size):
                     optimizer.zero_grad()
                     outputs = ddp_model(data)
                     loss = criterion(outputs, target)
-                    python_state.reset_reconstruction_error()
-                    python_state.reset_reconstruction_power()
+                    python_state.reset_norms()
                     running_loss += loss.item()
                     report_loss += loss.item()
                     loss.backward()
@@ -419,28 +438,34 @@ def train_model(rank, world_size):
 
                     if iteration % REPORT_LOSS_EVERY == 0:
                         writer.add_scalar('loss', report_loss / REPORT_LOSS_EVERY, iteration)
-                        writer.add_scalar('transferred_kb', compression_python.get_bytes() / 1024., iteration)
-                        writer.add_scalar('original_kb', python_state.get_original_bytes() / 1024., iteration)
-                        if (python_state.get_reconstruction_norm_l2() is not None):
-                            writer.add_scalar('reconstruction_norm_l2', python_state.get_reconstruction_norm_l2(),
-                                              iteration)
-                            writer.add_scalar('reconstruction_norm_l1', python_state.get_reconstruction_norm_l1(),
-                                              iteration)
-                            writer.add_scalar('reconstruction_norm_l0', python_state.get_reconstruction_norm_l0(),
-                                              iteration)
-                            writer.add_scalar('reconstruction_norm_inf', python_state.get_reconstruction_norm_inf(),
-                                              iteration)
-                        if python_state.get_reconstruction_error_l2() is not None:
-                            writer.add_scalar('reconstruction_error_l2', python_state.get_reconstruction_error_l2(),
-                                              iteration)
-                            writer.add_scalar('reconstruction_error_l1', python_state.get_reconstruction_error_l1(),
-                                              iteration)
-
-                        # print(
-                        #     f"Megabytes {compression_python.get_bytes()}/{python_state.get_original_bytes()}({compression_python.get_bytes() / python_state.get_original_bytes()})")
-                        # print(f"Model loss {report_loss / REPORT_LOSS_EVERY})")
+                        python_state.error_tracker.add_summary_norms(writer, "reconstruction_error", iteration)
+                        python_state.reconstructed_tracker.add_summary_norms(writer, "reconstruction", iteration)
+                        python_state.original_tracker.add_summary_norms(writer, "node_g", iteration)
+                        python_state.g_mean_tracker.add_summary_norms(writer, "reduced_g_mean", iteration)
+                        python_state.reconstructed_tracker.add_relative_norm(python_state.g_mean_tracker,
+                                                                             writer,
+                                                                             "reconstruction_norm_over_no_compression_rate",
+                                                                             iteration)
+                        python_state.reconstructed_tracker.add_relative_norm(python_state.original_tracker,
+                                                                             writer,
+                                                                             "reconstruction_norm_over_original_rate",
+                                                                             iteration)
+                        python_state.error_tracker.add_relative_norm(python_state.g_mean_tracker,
+                                                                     writer,
+                                                                     "error_over_no_compression_rate",
+                                                                     iteration)
+                        writer.add_scalar('cosine_dist_reconstruction_g_mean',
+                                          python_state.get_reconstruction_cosine_dist(), iteration)
+                        writer.add_scalar('reconstruction_g_mean_angle', python_state.get_reconstruction_angle(),
+                                          iteration)
+                        python_state.g_mean_tracker.add_summary_size_kb(writer, "no_compression", iteration)
+                        writer.add_scalar('sent_kb', compression_python.get_bytes() / 1024., iteration)
+                        writer.add_scalar('compression_ratio',
+                                          compression_python.get_bytes() / python_state.g_mean_tracker.bytes,
+                                          iteration)
                         report_loss = 0
                         compression_python.reset_network_stats()
+                        python_state.reset_norms()
                         python_state.reset_network_stats()
 
                     if iteration % PRINT_LOSS_EVERY == 0:

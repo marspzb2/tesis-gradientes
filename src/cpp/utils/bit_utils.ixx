@@ -85,16 +85,16 @@ namespace compression::utils {
             auto old_val=tensor[blk];
 
             tensor[blk] |= get_trailing_bits_little_e(value, quantity) << (block_size - blk_offset - quantity );
-            std::cout << std::format("Writted {:b}({}) on index {} ({}/{}) of value '{:b}'...'{:b}'\n",
-                                     value,
-                                     quantity,
-                                     blk_offset,
-                                     blk,
-                                     current_position,
-                                     old_val,
-                                     tensor[blk]
-
-            );
+            //std::cout << std::format("Writted {:b}({}) on index {} ({}/{}) of value '{:b}'...'{:b}'\n",
+            //                         value,
+            //                         quantity,
+            //                         blk_offset,
+            //                         blk,
+            //                         current_position,
+            //                         old_val,
+            //                         tensor[blk]
+            //
+            //);
         } else {
             int first_block_write = block_size - blk_offset;
             int last_block_write = quantity - first_block_write;
@@ -104,19 +104,19 @@ namespace compression::utils {
             tensor[blk + 1] |= get_trailing_bits_little_e(value, last_block_write) << (
                 block_size - last_block_write );
 
-            std::cout << std::format("Writted {:b}({}/{:b}) on index {} ({}/{}) of value '{:b}'...'{:b}' and '{:b}'....'{:b}'\n",
-                                    value,
-                                    first_block_write,
-                                    value>>last_block_write,
-                                    blk_offset,
-                                    blk,
-                                    current_position,
-                                    old_val_a,
-                                    tensor[blk],
-                                    old_val_b,
-                                    tensor[blk+1]
-
-           );
+           // std::cout << std::format("Writted {:b}({}/{:b}) on index {} ({}/{}) of value '{:b}'...'{:b}' and '{:b}'....'{:b}'\n",
+           //                         value,
+           //                         first_block_write,
+           //                         value>>last_block_write,
+           //                         blk_offset,
+           //                         blk,
+           //                         current_position,
+           //                         old_val_a,
+           //                         tensor[blk],
+           //                         old_val_b,
+           //                         tensor[blk+1]
+           //
+           //);
         }
         return current_position + quantity;
     }

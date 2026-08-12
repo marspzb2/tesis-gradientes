@@ -3,7 +3,6 @@
 //
 module;
 #include  <torch/torch.h>
-
 export module EliasCoding;
 import BitUtils;
 
@@ -20,7 +19,7 @@ namespace compression::utils {
             value = prepend_length - 1;
             length += prepend_length;
         }
-        std::cout << "Elias for:  " << og << " is " << std::format("{:b}\n", elias_code) << std::endl;
+        //std::cout << "Elias for:  " << og << " is " << std::format("{:b}\n", elias_code) << std::endl;
         return std::make_tuple(elias_code, length);
     }
 

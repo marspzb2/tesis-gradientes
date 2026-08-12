@@ -18,9 +18,10 @@ import PowerSGD;
 import CompressionFilter;
 import Network;
 import NoCompressionMethod;
-
+import QSGD;
 
 using compression::methods::DoublePowerSGD;
+using compression::methods::DoubleQSGD;
 namespace py = pybind11;
 
 
@@ -37,6 +38,10 @@ PYBIND11_MODULE(compression_python, m) {
     py::class_<DoublePowerSGD>(m, "PowerSGD")
             .def(py::init<int>())
             .def("run", &DoublePowerSGD::doMethod);
+
+    py::class_<DoubleQSGD>(m, "QSGD")
+            .def(py::init<int,bool>())
+            .def("run", &DoubleQSGD::doMethod);
 
     py::class_<compression::methods::NoCompressionMethod>(m, "NoCompression")
             .def(py::init<>())

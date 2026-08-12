@@ -4,6 +4,8 @@
 
 module;
 #include <torch/torch.h>
+#include <spdlog/spdlog.h>
+#include <functional>
 
 export module FixedQuantizationFilters;
 import CompressionFilter;
@@ -41,8 +43,14 @@ export
                 auto original_tensor_data = tensor.data_ptr<InputT>();
                 auto result_tensor_data = result.data_ptr<OutputT>();
                 for (int64_t i = 0; i < tensor.numel(); i++) {
-                    std::cout<<"Holis"<<quantization_schema->quantize_value(original_tensor_data[i])<<std::endl;
-                    result_tensor_data[i] = quantization_schema->quantize_value(original_tensor_data[i]);
+                    auto quantized_value = quantization_schema->quantize_value(original_tensor_data[i]);
+
+                    spdlog::debug(
+                        "Quantized value of '{}' to '{}'",
+                        original_tensor_data[i],
+                        quantized_value);
+
+                    result_tensor_data[i] = quantized_value;
                 }
                 return result;
             }
@@ -55,9 +63,10 @@ export
 
         public:
             explicit FixedQuantizationBackwardFilter(
-               std::unique_ptr<ValueQuantization<InputT, OutputT> > quantization_schema)
-               : quantization_schema(std::move(quantization_schema)) {
+                std::unique_ptr<ValueQuantization<InputT, OutputT> > quantization_schema)
+                : quantization_schema(std::move(quantization_schema)) {
             }
+
             at::Tensor internal_do_filter(const Tensor &tensor, const std::optional<EncMetaT> &metadata,
                                           base::NoValue *state, base::CompressionFilterCtx &ctx) override {
                 Tensor result = torch::zeros_like(
@@ -65,7 +74,6 @@ export
                 auto original_tensor_data = tensor.data_ptr<OutputT>();
                 auto result_tensor_data = result.data_ptr<InputT>();
                 for (int64_t i = 0; i < tensor.numel(); i++) {
-
                     result_tensor_data[i] = quantization_schema->dequantize_value(original_tensor_data[i]);
                 }
                 return result;
@@ -98,7 +106,10 @@ export
             OutputT quantize_value(InputT value) override {
                 if (reject_zero) {
                     int sign = value >= 0 ? 1 : -1;
-                    if (value == 0)return 1;
+                    if (value >= 0) {
+                        return sign * round((abs(value) * 1. / lattice_size))+1;
+                    } else if (value == -0.)return -1;
+
                     return sign * ceil((abs(value) * 1. / lattice_size));
                 } else {
                     return static_cast<OutputT>(value / this->lattice_size);
@@ -108,7 +119,11 @@ export
             InputT dequantize_value(OutputT value) override {
                 if (reject_zero) {
                     int sign = value >= 0 ? 1 : -1;
-                    return static_cast<InputT>((value - sign) * this->lattice_size + sign * this->lattice_size / 2.);
+                    if (sign >= 0) {
+                        return static_cast<InputT>((value - 1) * this->lattice_size);
+                    }
+                    return static_cast<InputT>(value * this->lattice_size);
+                    //return static_cast<InputT>((value - sign) * this->lattice_size + sign * this->lattice_size / 2.);
                 } else {
                     return static_cast<InputT>(value * 1. * this->lattice_size);
                 }
@@ -131,14 +146,14 @@ export
                 InputT current_quantization_val = original_scheme->dequantize_value(inner_quantization);
                 InputT previous_quantization_val = original_scheme->dequantize_value(inner_quantization - 1);
                 InputT next_quantization_val = original_scheme->dequantize_value(inner_quantization + 1);
-               /* std::cout<<std::format("Value for {} -> {}({}) -> {}({}) ->{}({})",
-                    value,
-                    inner_quantization-1,
-                    previous_quantization_val,
-                    inner_quantization,
-                    current_quantization_val,
-                    inner_quantization+1,
-                    next_quantization_val)<<std::endl;*/
+                /* std::cout<<std::format("Value for {} -> {}({}) -> {}({}) ->{}({})",
+                     value,
+                     inner_quantization-1,
+                     previous_quantization_val,
+                     inner_quantization,
+                     current_quantization_val,
+                     inner_quantization+1,
+                     next_quantization_val)<<std::endl;*/
                 return dither(value,
                               inner_quantization - 1, previous_quantization_val,
                               inner_quantization, current_quantization_val,
@@ -146,9 +161,9 @@ export
             }
 
             OutputT dither(InputT real_value,
-                OutputT a, InputT val_a,
-                OutputT b, InputT val_b,
-                OutputT c,InputT val_c) {
+                           OutputT a, InputT val_a,
+                           OutputT b, InputT val_b,
+                           OutputT c, InputT val_c) {
                 if (val_a > val_b && val_a > val_c) {
                     return dither(real_value, b, val_b, c, val_c, a, val_a);
                 }
@@ -158,8 +173,8 @@ export
                 if (val_b > val_c) {
                     return dither(real_value, a, val_a, c, val_c, b, val_b);
                 }
-                OutputT min, max;
-                InputT q_min, q_max;
+                InputT min, max;
+                OutputT q_min, q_max;
 
                 if (real_value <= val_b) {
                     q_min = a;
@@ -172,8 +187,11 @@ export
                     min = val_b;
                     max = val_c;
                 }
+                if (max == min) {
+                    return q_min;
+                }
                 //std::cout<<std::format("q_min={}, q_max={},a={},b={},c={}", q_min, q_max,a,b,c)<<std::endl;
-                if (torch::rand(1).item<InputT>() <= real_value - min) {
+                if (torch::rand(1).item<InputT>() > (real_value - min) / (max - min)) {
                     return q_min;
                 } else {
                     return q_max;
