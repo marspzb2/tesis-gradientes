@@ -3,6 +3,7 @@ import runpod
 import os
 import sys
 import tempfile
+import traceback
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -100,10 +101,13 @@ if COMPRESSION_NAME.lower() == "powersgd":
 elif COMPRESSION_NAME.lower() == "none":
     COMPRESSION_CONFIG = "whole", lambda tensor: compression_python.NoCompression()
 elif COMPRESSION_NAME.lower() == "qsgd":
-    QSGD_LEVELS = int(os.environ.get("QSGD_LEVELS", 8))
-    QSGD_DITHER = os.environ.get("QSGD_DITHERING_DISABLED", "false") != "true"
-    COMPRESSION_CONFIG = "whole", lambda tensor: compression_python.QSGD(QSGD_LEVELS, QSGD_DITHER)
-    METHOD_PARAMS_NAMES = f"q{QSGD_LEVELS}d{QSGD_DITHER}"
+    QSGD_Q = int(os.environ.get("QSGD_Q", 8))
+    QSGD_DITHER = os.environ.get("QSGD_DITHERING_DISABLED", "false").lower() != "true"
+    QSGD_BUCKET_SIZE = int(os.environ.get("QSGD_BUCKET_SIZE", 512))
+    QSGD_NORM_P = int(os.environ.get("QSGD_NORM_P", 2)) if os.environ.get("QSGD_NORM_P", 2) != 'inf' else 10000000
+    COMPRESSION_CONFIG = "whole", lambda tensor: compression_python.QSGD(QSGD_Q, QSGD_BUCKET_SIZE, QSGD_NORM_P,
+                                                                         QSGD_DITHER)
+    METHOD_PARAMS_NAMES = f"q{QSGD_Q}b{QSGD_BUCKET_SIZE}d{"T" if QSGD_DITHER else "F"}p{"inf" if QSGD_NORM_P > 10 else QSGD_NORM_P}"
 
 else:
     raise RuntimeError("Error compression not supported")
@@ -474,8 +478,10 @@ def train_model(rank, world_size):
                         running_loss = 0
 
         print(f"Finished running basic DDP example on rank {rank}.")
-    except Exception as e:
-        print(f"Failed running basic DDP example on rank {rank}: {e}")
+    except Exception:
+        print(f"Failed running basic DDP example on rank {rank}:")
+        traceback.print_exc()
+        raise
     finally:
         cleanup()
 
@@ -486,8 +492,9 @@ if __name__ == "__main__":
                  args=(WORLD_SIZE,),
                  nprocs=WORLD_SIZE,
                  join=True)
-    except:
-        print("Failed to spawn")
+    except Exception:
+        print("Failed to spawn:")
+        traceback.print_exc()
     finally:
         try:
             pod_id = os.environ["RUNPOD_POD_ID"]

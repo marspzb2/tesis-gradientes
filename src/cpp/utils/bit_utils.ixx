@@ -3,6 +3,7 @@
 //
 module;
 #include <torch/torch.h>
+#include <limits>
 
 export module BitUtils;
 using index_t = int64_t;
@@ -42,21 +43,37 @@ namespace compression::utils {
         auto [end_block, end_block_offset] = current_position(current_idx + length, block_size);
 
         if (end_block == start_block) {
+            const uint64_t mask =
+                (uint64_t{1} << length) - uint64_t{1};
             return std::make_tuple(
-                (tensor[start_block] >> (block_size - end_block_offset)) & (
-                    (1 << (end_block_offset - start_block_offset)) - 1),
+                (static_cast<uint64_t>(tensor[start_block])
+                    >> (block_size - end_block_offset)) & mask,
                 current_idx + length);
-        } else {
-            uint64_t start_mask = (1 << (block_size - start_block_offset)) - 1;
-            uint64_t current_chunk = tensor[start_block] & start_mask;
-            for (int blk = start_block + 1; blk < end_block - 1; blk++) {
-                current_chunk <<= block_size;
-                current_chunk |= tensor[blk];
-            }
-            current_chunk <<= end_block_offset;
-            current_chunk |= tensor[end_block] >> (block_size - end_block_offset);
-            return std::make_tuple(current_chunk, current_idx + length);
         }
+
+        const uint first_part_length =
+            block_size - start_block_offset;
+        const uint64_t start_mask =
+            first_part_length == 64
+                ? std::numeric_limits<uint64_t>::max()
+                : (uint64_t{1} << first_part_length) - uint64_t{1};
+
+        uint64_t current_chunk =
+            static_cast<uint64_t>(tensor[start_block]) & start_mask;
+
+        for (block_idx_t blk = start_block + 1; blk < end_block; ++blk) {
+            current_chunk <<= block_size;
+            current_chunk |= static_cast<uint64_t>(tensor[blk]);
+        }
+
+        if (end_block_offset > 0) {
+            current_chunk <<= end_block_offset;
+            current_chunk |=
+                static_cast<uint64_t>(tensor[end_block])
+                >> (block_size - end_block_offset);
+        }
+
+        return std::make_tuple(current_chunk, current_idx + length);
     }
 
     export template<typename T>
@@ -80,7 +97,7 @@ namespace compression::utils {
 
         // block 10
         //offset 1
-        if (blk_offset + quantity < block_size) {
+        if (blk_offset + quantity <= block_size) {
 
             auto old_val=tensor[blk];
 

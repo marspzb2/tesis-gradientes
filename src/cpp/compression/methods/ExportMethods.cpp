@@ -41,7 +41,7 @@ PYBIND11_MODULE(compression_python, m) {
             .def("run", &DoublePowerSGD::doMethod);
 
     py::class_<FloatQSGD>(m, "QSGD")
-            .def(py::init<int,bool>())
+            .def(py::init<int,int,int,bool>())
             .def("run", &FloatQSGD::doMethod);
 
     py::class_<compression::methods::NoCompressionMethod>(m, "NoCompression")
