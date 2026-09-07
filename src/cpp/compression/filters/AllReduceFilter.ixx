@@ -6,15 +6,18 @@
 // Created by Marcos Perez on 7/6/26.
 //
 module;
-#include <torch/torch.h>
+#include <ATen/core/Tensor.h>
+#include <ATen/ops/div.h>
+#include <c10/core/TensorOptions.h>
+
 
 #include <utility>
 export module AllReduceFilter;
 
 import CompressionFilter;
 using namespace compression::base;
-using torch::Tensor;
-using torch::TensorOptions;
+using at::Tensor;
+using at::TensorOptions;
 
 export
 {
@@ -40,7 +43,7 @@ export
                 work->wait();
                 Tensor reduced = work->result()[0];
                 if (average_results) {
-                    reduced = reduced / ctx.world_size();
+                    reduced = at::div(reduced,ctx.world_size());
                 }
 
                 if (!this->output_save_name.empty()) {

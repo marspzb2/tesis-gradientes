@@ -36,6 +36,7 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
 endif()
 
 find_package(Torch REQUIRED CONFIG)
+find_package(OpenMP REQUIRED)
 
 
 FetchContent_Declare(
@@ -47,17 +48,18 @@ FetchContent_MakeAvailable(spdlog)
 
 # Subdirectories
 add_subdirectory(src/cpp/compression)
+add_subdirectory(src/cpp/compression/serialization)
 add_subdirectory(src/cpp/utils)
 
-add_executable(entrenamiento src/cpp/main.cpp)
-target_compile_features(entrenamiento PRIVATE cxx_std_20)
-set_property(TARGET entrenamiento PROPERTY CXX_SCAN_FOR_MODULES ON)
-
-# Linking
-target_link_libraries(entrenamiento
-        PRIVATE
-        compression-base
-        utils
-)
-
-target_link_libraries(entrenamiento PRIVATE torch)
+#add_executable(entrenamiento src/cpp/main.cpp)
+#target_compile_features(entrenamiento PRIVATE cxx_std_20)
+#set_property(TARGET entrenamiento PROPERTY CXX_SCAN_FOR_MODULES ON)
+#
+## Linking
+#target_link_libraries(entrenamiento
+#        PRIVATE
+#        compression-base
+#        utils
+#)
+#
+#target_link_libraries(entrenamiento PRIVATE torch)

@@ -3,22 +3,32 @@
 //
 module;
 #include  <torch/torch.h>
+#define ELIAS_CACHE_SIZE 256*256
 export module EliasCoding;
 import BitUtils;
 
 namespace compression::utils {
+
+    //uint64_t ELIAS_CODING_CACHE[ELIAS_CACHE_SIZE]{0};
+    //uint ELIAS_CODING_CACHE_LEN[ELIAS_CACHE_SIZE]{0};
+
     export template<typename CodeT>
-    std::tuple<CodeT, uint> elias_omega_code(uint value) {
+    std::tuple<CodeT, uint> elias_omega_code(int16_t value) {
         if (value < 0)throw std::invalid_argument("value must be greater than 0.");
+        //if (value==1)return 0;
+        //if (ELIAS_CODING_CACHE[value]!=0)
+        //    return std::make_tuple(ELIAS_CODING_CACHE[value],ELIAS_CODING_CACHE_LEN[value]);
         uint og = value;
         CodeT elias_code = 0;
         uint length = 1;
         while (value > 1) {
-            int prepend_length = bit_width(value);
+            uint prepend_length = bit_width(value);
             elias_code = elias_code | (value << length);
             value = prepend_length - 1;
             length += prepend_length;
         }
+        //ELIAS_CODING_CACHE[og] = elias_code;
+        //ELIAS_CODING_CACHE_LEN[og] = length;
         //std::cout << "Elias for:  " << og << " is " << std::format("{:b}\n", elias_code) << std::endl;
         return std::make_tuple(elias_code, length);
     }
@@ -30,7 +40,7 @@ namespace compression::utils {
         uint og = value;
         uint length = 1;
         while (value > 1) {
-            int prepend_length = bit_width(value);
+            uint prepend_length = bit_width(value);
             //std::cout << "Bit width of  '" << value << "': " << prepend_length << std::endl;
             elias_code = elias_code | (value << length);
             //std::cout << "current elias of:  " << og << " (" << value << ") is " << std::format("{:b}\n", elias_code) <<

@@ -1,9 +1,9 @@
 module;
-#include <torch/torch.h>
+#include <ATen/core/Tensor.h>
 
 export module BaseMethod;
 import CompressionFilter;
-using torch::Tensor;
+using at::Tensor;
 
 export namespace compression::methods {
     class BaseCompressionMethod {

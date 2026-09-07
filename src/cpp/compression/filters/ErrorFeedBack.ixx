@@ -6,10 +6,13 @@ module;
 export module ErrorFeedbackFilters;
 
 import CompressionFilter;
+import Metrics;
 using torch::Tensor;
 using compression::base::CompressionFilter;
 using compression::base::NoValue;
 using compression::base::SavedMatrixState;
+using compression::metrics::Metrics;
+
 #define MATRIX_STATE_NAME "ERROR_FEEDBACK"
 #define ORIGINAL_MATRIX_STATE_NAME "ERROR_FEEDBACK_ORIGINAL"
 export namespace compression::filters {
@@ -77,9 +80,13 @@ export namespace compression::filters {
             SavedMatrixState *original_matrix = compression_ctx.get_state<SavedMatrixState>(ORIGINAL_MATRIX_STATE_NAME);
             if (original_matrix != nullptr) {
                 Tensor localRepresentation = decompress(tensor, meta_tensor, compression_ctx);
+                auto error_feedback = original_matrix->matrix() - localRepresentation;
                 compression_ctx.put_state(MATRIX_STATE_NAME,
                                           std::make_unique<SavedMatrixState>(
-                                              MATRIX_STATE_NAME, original_matrix->matrix() - localRepresentation));
+                                              MATRIX_STATE_NAME, error_feedback));
+                Metrics::metrics()
+                        .vector(metrics::VectorMetricOptions{.name = "error_feed_back_vector"})
+                        .register_vector(error_feedback);
             }
 
             return std::make_tuple(tensor, meta_tensor);

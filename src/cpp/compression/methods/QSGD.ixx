@@ -5,6 +5,9 @@ module;
 export module QSGD;
 import BaseMethod;
 import all_filters;
+import ParallelSerialization;
+import EliasSerialization;
+import ZeroGapSerialization;
 import CompressionFilter;
 using torch::Tensor;
 using namespace compression::filters;
@@ -26,11 +29,17 @@ export namespace compression::methods {
                                 int norm_p,
                                 std::unique_ptr<CompressionFilter<InputT, QuantizedT> > encode_q,
                                 std::unique_ptr<CompressionFilter<QuantizedT, InputT> > decode_q) {
+            auto serialization_method = std::make_unique<serialization::ParallelSerialization<QuantizedT, QuantizedT> >(
+                std::make_unique<serialization::ZeroGapSerialization<QuantizedT, QuantizedT> >(
+                    std::make_unique<serialization::EliasSerialization<QuantizedT, QuantizedT> >(true),
+                    std::make_unique<serialization::EliasSerialization<int64_t, QuantizedT> >(false)
+                )
+            );
+
             auto qsgd_decoder =
-                    std::make_unique<EliasDecodingBackwardFilter<QuantizedT, QuantizedT, int64_t> >()
+                    std::make_unique<FixedDeserializationBackwardFilter<QuantizedT, QuantizedT, int64_t> >(
+                        serialization_method->clone())
                     >> std::move(decode_q)
-                    //>> std::make_unique<FixedQuantizationBackwardFilter<InputT, QuantizedT, int64_t> >(
-                    //    std::make_unique<RandomDitheringQuantization<InputT, QuantizedT> >(std::move(decode_q)))
                     >> std::make_unique<NormalizeByBucketBackwardFilter<InputT, int64_t> >(bucket_size)
                     >> std::make_unique<FlattenShapeBack<InputT, int64_t> >();
             using Decoder = typename decltype(qsgd_decoder)::element_type;
@@ -39,14 +48,10 @@ export namespace compression::methods {
                                    >> std::make_unique<NormalizeByBucketForwardFilter<InputT, int64_t> >(
                                        bucket_size, norm_p)
                                    >> std::move(encode_q)
-                                   //>> std::make_unique<FixedQuantizationForwardFilter<InputT, QuantizedT, int64_t> >(
-                                   //    std::make_unique<RandomDitheringQuantization<InputT, QuantizedT> >(
-                                   //        std::move(encode_q)))
-                                   >> std::make_unique<EliasEncodingForwardFilter<QuantizedT, QuantizedT, int64_t> >()
-                                   >> std::make_unique<AllGatherFilter<QuantizedT, int64_t> >("Lala",
+                                   >> std::make_unique<FixedSerializationForwardFilter<QuantizedT, QuantizedT,
+                                       int64_t> >(serialization_method->clone())
+                                   >> std::make_unique<AllGatherFilter<QuantizedT,QuantizedT, int64_t> >("transferred",
                                        Reduction::meanReductionStrategy(std::move(qsgd_decoder)));
-            ///std::make_unique<FilterReductionStrategy<decltype(qsgd_decoder)::element_type> >(
-            //   std::move(qsgd_decoder)));
 
             this->filter_chain = std::move(qsgd_compresion);
         }
@@ -59,26 +64,28 @@ export namespace compression::methods {
                                                                  .device(input.device())), filter_ctx));
         }
     };
+
     double lattice_size(int q) {
-        if (q<=0) {
+        if (q <= 0) {
             throw std::logic_error("lattice_size must be greater than 0");
         }
-        return 1./(pow(2,q)-1);
+        return 1. / (pow(2, q) - 1);
     }
 
     class DoubleQSGD : public BaseQSGDMethod<double, int64_t> {
     public:
-        explicit DoubleQSGD(int q = 8, int bucket_size = 512, int norm_p=2, bool dither = true)
+        explicit DoubleQSGD(int q = 8, int bucket_size = 512, int norm_p = 2, bool dither = true)
             : BaseQSGDMethod<double, int64_t>(bucket_size,
                                               norm_p,
-                                              regular_lattice_quantization_filter<double, int64_t>(lattice_size(q), dither),
+                                              regular_lattice_quantization_filter<double, int64_t>(
+                                                  lattice_size(q), dither),
                                               regular_lattice_dequantize_filter<double, int64_t>(lattice_size(q))) {
         }
     };
 
     class FloatQSGD : public BaseQSGDMethod<float, int64_t> {
     public:
-        explicit FloatQSGD(int q = 8, int bucket_size = 512, int norm_p=2, bool dither = true)
+        explicit FloatQSGD(int q = 8, int bucket_size = 512, int norm_p = 2, bool dither = true)
             : BaseQSGDMethod<float, int64_t>(
                 bucket_size,
                 norm_p,

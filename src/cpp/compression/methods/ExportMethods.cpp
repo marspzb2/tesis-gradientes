@@ -16,6 +16,7 @@
 #include "spdlog/fmt/ostr.h"  // support for user defined types
 import PowerSGD;
 import CompressionFilter;
+import Metrics;
 import Network;
 import NoCompressionMethod;
 import QSGD;
@@ -23,6 +24,9 @@ import QSGD;
 using compression::methods::DoublePowerSGD;
 using compression::methods::DoubleQSGD;
 using compression::methods::FloatQSGD;
+using compression::metrics::Metrics;
+using compression::metrics::NumberTracking;
+using compression::metrics::VectorMetric;
 namespace py = pybind11;
 
 
@@ -33,6 +37,71 @@ PYBIND11_MODULE(compression_python, m) {
     //    .def(py::init<int>())
     //    .def("compress", &QSGDFilter::compress)
     //    .def("decompress", &QSGDFilter::decompress);
+    py::class_<VectorMetric>(m, "VectorMetric")
+            .def_property_readonly("name", &VectorMetric::name)
+            .def_property_readonly(
+                "registered_chunk_count",
+                &VectorMetric::registered_chunk_count)
+            .def_property_readonly("norm_0", &VectorMetric::norm_0)
+            .def_property_readonly("norm_1", &VectorMetric::norm_1)
+            .def_property_readonly("norm_2", &VectorMetric::norm_2)
+            .def_property_readonly("norm_inf", &VectorMetric::norm_inf)
+            .def_property_readonly("bytes", &VectorMetric::bytes)
+            .def_property_readonly(
+                "total_elements",
+                &VectorMetric::total_elements)
+            .def("reset", &VectorMetric::reset);
+
+    py::class_<NumberTracking<double> >(m, "NumberMetric")
+            .def_property_readonly("name", &NumberTracking<double>::name)
+            .def_property_readonly("value", &NumberTracking<double>::value)
+            .def_property_readonly(
+                "running_average",
+                &NumberTracking<double>::running_average)
+            .def_property_readonly(
+                "aggregated_number",
+                &NumberTracking<double>::aggregated_number)
+            .def_property_readonly(
+                "min",
+                &NumberTracking<double>::min)
+            .def_property_readonly(
+                "max",
+                &NumberTracking<double>::max)
+            .def_property_readonly(
+                "total_calls",
+                &NumberTracking<double>::total_calls)
+            .def_property_readonly("avg", &NumberTracking<double>::avg)
+            .def(
+                "reset",
+                &NumberTracking<double>::reset,
+                py::arg("full_reset") = false);
+
+    m.def("has_vector_metric",
+          [](const std::string &name) {
+              return Metrics::metrics().has_vector_metric(name);
+          });
+    m.def("has_number_metric",
+          [](const std::string &name) {
+              return Metrics::metrics().has_number_metric(name);
+          });
+    m.def(
+        "vector_metric",
+        [](const std::string &name) -> VectorMetric & {
+            return Metrics::metrics().vector(name);
+        },
+        py::return_value_policy::reference);
+
+    m.def(
+        "number_metric",
+        [](const std::string &name) -> NumberTracking<double> & {
+            return Metrics::metrics().number(name);
+        },
+        py::return_value_policy::reference);
+
+    m.def("reset_metrics", [](bool full_reset) {
+        Metrics::metrics().reset(full_reset);
+    }, py::arg("full_reset") = false);
+
     py::class_<compression::base::CompressionFilterCtx>(m, "CompressionFilterCtx")
             .def(py::init<int>());
 
@@ -41,15 +110,18 @@ PYBIND11_MODULE(compression_python, m) {
             .def("run", &DoublePowerSGD::doMethod);
 
     py::class_<FloatQSGD>(m, "QSGD")
-            .def(py::init<int,int,int,bool>())
+            .def(py::init<int, int, int, bool>())
             .def("run", &FloatQSGD::doMethod);
 
     py::class_<compression::methods::NoCompressionMethod>(m, "NoCompression")
             .def(py::init<>())
             .def("run", &compression::methods::NoCompressionMethod::doMethod);
 
-    m.def("get_bytes", []()-> uint64_t {
-        return Network::instance().get_bytes();
+    m.def("sent_bytes", []()-> uint64_t {
+        return Network::instance().get_sent_bytes();
+    });
+    m.def("recv_bytes", []()-> uint64_t {
+        return Network::instance().get_recv_bytes();
     });
 
     m.def("reset_network_stats", []() {

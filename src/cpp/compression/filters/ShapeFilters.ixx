@@ -3,7 +3,9 @@
 //
 
 module;
-#include <torch/torch.h>
+#include <ATen/core/Tensor.h>
+#include <ATen/ops/zeros.h>
+#include <ATen/ops/cat.h>
 
 export module ShapeFilters;
 import CompressionFilter;
@@ -25,12 +27,12 @@ export
                                          base::NoValue *state,
                                          base::CompressionFilterCtx &ctx) override {
                 int dimensions = metadata->size();
-                torch::Tensor values = torch::zeros({dimensions + 1}, meta_tensor.options());
+                at::Tensor values = at::zeros({dimensions + 1}, meta_tensor.options());
                 values[0] = static_cast<EncMetadataT>(dimensions);
                 for (int i = 0; i < metadata->size(); ++i) {
                     values[i + 1] = static_cast<EncMetadataT>(metadata->at(i));
                 }
-                return torch::cat({values, meta_tensor}, 0);
+                return at::cat({values, meta_tensor}, 0);
             }
 
             std::optional<std::vector<int64_t> > parse_metadata(const at::Tensor &tensor,

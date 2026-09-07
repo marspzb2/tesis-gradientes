@@ -8,6 +8,13 @@ target_sources(utils
         bit_utils.ixx
         elias.ixx
         torch_scalar_utils.ixx
+        BitConcatUtils.ixx
+        BitSelectionUtils.ixx
+        CommonConcepts.ixx
+        CommonValidations.ixx
 )
 find_package(Torch REQUIRED CONFIG)
-target_link_libraries(utils PRIVATE torch)
+target_link_libraries(utils PRIVATE
+        torch
+        OpenMP::OpenMP_CXX
+)

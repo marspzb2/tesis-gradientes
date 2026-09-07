@@ -20,6 +20,7 @@ target_sources(compression-base
         PUBLIC
         FILE_SET CXX_MODULES
         FILES
+        Metrics.ixx
         Network.ixx
         ${BASE}
         ${FILTERS}
@@ -29,6 +30,11 @@ target_link_libraries(compression-base PRIVATE
         torch
         spdlog::spdlog
         utils
+        serialization
+)
+
+target_link_libraries(compression-base PUBLIC
+        OpenMP::OpenMP_CXX
 )
 
 #Compression methods

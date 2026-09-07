@@ -10,6 +10,8 @@ module;
 export module CompressionFilter;
 import torch_scalar_utils;
 import Network;
+import CommonValidations;
+
 using torch::Tensor;
 
 export
@@ -252,27 +254,34 @@ export
             std::unique_ptr<FilterT> filter;
             CombineFunction combine;
             EndTransformFn end_transform;
+            int ignore_filter_rank_;
 
         public:
             explicit FilterReductionStrategy(std::unique_ptr<FilterT> filter,
                                              CombineFunction combine,
-                                             EndTransformFn end_transform
+                                             EndTransformFn end_transform,
+                                             int ignore_filter_rank = -1
             )
-                : filter(std::move(filter)), combine(combine), end_transform(end_transform) {
+                : filter(std::move(filter)), combine(combine), end_transform(end_transform),
+                  ignore_filter_rank_(ignore_filter_rank) {
             }
 
             std::tuple<Tensor, Tensor> reduce(const std::vector<std::vector<Tensor> > &values,
                                               CompressionFilterCtx &ctx) override {
-                if (values.empty()) {
-                    throw std::invalid_argument("Empty vector");
-                }
+                utils::validate_size_is(values,2,"The vector must have at least two list");
+                utils::validate_not_empty(values[0],"List values cannot be empty");
+                utils::validate_same_size(values[0],values[1],"List mus share the smae size");
+
                 bool first = true;
                 FilterResult result;
 
-                for (auto tensors: values) {
-                    Tensor value_tensor = tensors.at(0);
-                    Tensor value_metadata = tensors.at(1);
-                    auto current_value = filter->do_filter(value_tensor, value_metadata, ctx);
+                for (int rank = 0; rank < values.front().size(); rank++) {
+                    Tensor value_tensor = values[0][rank];
+                    Tensor value_metadata = values[1][rank];
+                    std::tuple current_value{value_tensor, value_metadata};
+                    if (ignore_filter_rank_ != rank) {
+                        current_value = filter->do_filter(value_tensor, value_metadata, ctx);
+                    }
                     if (first) {
                         result = current_value;
                         first = false;
@@ -283,7 +292,7 @@ export
                 return end_transform(result, values);
             };
 
-            static std::unique_ptr<FilterReductionStrategy> meanReductionStrategy(std::unique_ptr<FilterT> filter) {
+            static std::unique_ptr<FilterReductionStrategy> meanReductionStrategy(std::unique_ptr<FilterT> filter,int ignore_filter_rank=-1) {
                 return std::make_unique<FilterReductionStrategy<FilterT> >(
                     std::move(filter),
                     [](const FilterResult &a, const FilterResult &b,
@@ -291,8 +300,9 @@ export
                         return std::make_tuple(std::get<0>(a) + std::get<0>(b), std::get<1>(a));
                     },
                     [](const FilterResult &a, const std::vector<std::vector<Tensor> > &values) {
-                        return std::make_tuple(std::get<0>(a) / (1. * values.size()), std::get<1>(a));
-                    });
+                        return std::make_tuple(std::get<0>(a) / (1. * values.front().size()), std::get<1>(a));
+                    },
+                    ignore_filter_rank);
             }
         };
     }

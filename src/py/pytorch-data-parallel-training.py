@@ -304,6 +304,21 @@ class CompressionPythonState:
         for tracker in self.trackers:
             tracker.reset_vector_norms()
 
+def add_mean_from_c(series_name,metric_name,writer,iteration):
+    if compression_python.has_number_metric(metric_name):
+        writer.add_scalar(series_name,compression_python.number_metric(metric_name).avg,iteration)
+def add_min_from_c(series_name,metric_name,writer,iteration):
+    if compression_python.has_number_metric(metric_name):
+        writer.add_scalar(series_name,compression_python.number_metric(metric_name).min,iteration)
+def add_max_from_c(series_name,metric_name,writer,iteration):
+    if compression_python.has_number_metric(metric_name):
+        writer.add_scalar(series_name,compression_python.number_metric(metric_name).max,iteration)
+def add_vector_norms(series_name,metric_name,writer,iteration):
+    if compression_python.has_vector_metric(metric_name):
+        writer.add_scalar(f"{series_name}_norm_0",compression_python.vector_metric(metric_name).norm_0,iteration)
+        writer.add_scalar(f"{series_name}_norm_1",compression_python.vector_metric(metric_name).norm_1,iteration)
+        writer.add_scalar(f"{series_name}_norm_2",compression_python.vector_metric(metric_name).norm_2,iteration)
+        writer.add_scalar(f"{series_name}_norm_inf",compression_python.vector_metric(metric_name).norm_inf,iteration)
 
 def train_model(rank, world_size):
     print(f"Running basic DDP example on rank {rank}.")
@@ -422,6 +437,7 @@ def train_model(rank, world_size):
             optimizer = optim.SGD(ddp_model.parameters(), **optimizer_params)
             running_loss = 0
             report_loss = 0
+            validation_transmitted_kbytes = 0
             print(f"Model in card... {rank}")
             ddp_model.train()
             for epoch in range(EPOCHS):
@@ -439,7 +455,7 @@ def train_model(rank, world_size):
                     report_loss += loss.item()
                     loss.backward()
                     optimizer.step()
-
+                    validation_transmitted_kbytes += compression_python.get_bytes()/1024.
                     if iteration % REPORT_LOSS_EVERY == 0:
                         writer.add_scalar('loss', report_loss / REPORT_LOSS_EVERY, iteration)
                         python_state.error_tracker.add_summary_norms(writer, "reconstruction_error", iteration)
@@ -467,14 +483,22 @@ def train_model(rank, world_size):
                         writer.add_scalar('compression_ratio',
                                           compression_python.get_bytes() / python_state.g_mean_tracker.bytes,
                                           iteration)
+                        add_mean_from_c('average_run_length','zero-run-length',writer,iteration)
+                        add_max_from_c('max_run_length','zero-run-length',writer,iteration)
+                        add_vector_norms("error_feedback_vector","error_feed_back_vector",writer,iteration)
+
                         report_loss = 0
                         compression_python.reset_network_stats()
                         python_state.reset_norms()
                         python_state.reset_network_stats()
+                        compression_python.reset_metrics(True)
 
+                    writer.add_scalar("transmitted_kb_from_last_validation",validation_transmitted_kbytes,iteration)
+                    writer.add_scalar("transmitted_mb_from_last_validation",validation_transmitted_kbytes/1024.,iteration)
                     if iteration % PRINT_LOSS_EVERY == 0:
                         print(f"Loss of {epoch_iteration}/{epoch} ({iteration})): {running_loss / PRINT_LOSS_EVERY}")
                         validate_model(ddp_model, validation_loader, criterion, writer, rank, iteration, epoch)
+                        validation_transmitted_kbytes = 0
                         running_loss = 0
 
         print(f"Finished running basic DDP example on rank {rank}.")
