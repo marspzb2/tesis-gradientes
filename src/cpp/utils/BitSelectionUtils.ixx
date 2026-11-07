@@ -1,9 +1,11 @@
 module;
 
+#include <algorithm>
 #include <concepts>
 #include <type_traits>
 #include <cassert>
 #include <limits>
+#include <cmath>
 
 export module BitSelectionUtils;
 export namespace compression::utils {
@@ -43,5 +45,26 @@ export namespace compression::utils {
         return static_cast<ResultT>(bits_wout_right_part); //1011
     }
 
-
+    template<std::integral ValueT, Unsigned ResultT>
+    ResultT select_bits_from_left(const ValueT *values, size_t position, int offset, uint8_t length) {
+        ValueT current_value = values[position];
+        constexpr uint8_t pointer_size = sizeof(ValueT) * 8;
+        uint8_t read_bits = 0;
+        ResultT result{0};
+        while (read_bits < length) {
+            int read_length = std::min(pointer_size - offset, length - read_bits);
+            result |= select_most_significant_bits<ValueT, ResultT>(current_value, read_length, offset) << (
+                length - read_bits - read_length);
+            read_bits += read_length;
+            offset += read_length;
+            if (offset >= pointer_size) {
+                offset %= pointer_size;
+                position++;
+                if (read_bits < length) {
+                    current_value = values[position];
+                }
+            }
+        }
+        return result;
+    }
 }

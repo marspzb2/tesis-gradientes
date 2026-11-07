@@ -6,7 +6,13 @@ module;
 #include <spdlog/spdlog.h>
 export module PowerSGD;
 import BaseMethod;
-import all_filters;
+import ChainFilter;
+import ErrorFeedbackFilters;
+import SaveMatrixFilter;
+import MatrixInitFilter;
+import MatrixMultiplyFilter;
+import AllReduceFilter;
+import OrthogonalizationFilter;
 import CompressionFilter;
 using torch::Tensor;
 using namespace compression::filters;
@@ -28,7 +34,8 @@ export namespace compression::methods {
             auto chain =
                     std::make_unique<ApplyErrorFeedback<InputT, int64_t> >()
                     >> std::make_unique<SaveMatrixFilter<InputT, int64_t> >("ORIGINAL")
-                    >> MatrixInitializationFilter<InputT, int64_t>::initialize_uniform_matrix("Q", {-2, rank})
+                    >> UniformMatrixInitialization<InputT, int64_t>("Q", {-2, rank})
+                    >> UniformMatrixInitialization<InputT,int64_t>("Q",{-2, rank})
                     >> MatOperationFilter<InputT, int64_t>::mat_dot("INPUT", "Q", "P")
                     >> std::make_unique<AllReduceFilter<InputT, int64_t> >("P")
                     >> std::make_unique<OrthogonalizationFilter<InputT, int64_t> >("P_hat")

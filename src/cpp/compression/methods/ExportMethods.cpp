@@ -20,6 +20,8 @@ import Metrics;
 import Network;
 import NoCompressionMethod;
 import QSGD;
+import RMQ;
+import DAQ;
 
 using compression::methods::DoublePowerSGD;
 using compression::methods::DoubleQSGD;
@@ -116,6 +118,14 @@ PYBIND11_MODULE(compression_python, m) {
     py::class_<compression::methods::NoCompressionMethod>(m, "NoCompression")
             .def(py::init<>())
             .def("run", &compression::methods::NoCompressionMethod::doMethod);
+
+    py::class_<compression::methods::RMQMethod>(m, "RMQ")
+            .def(py::init<double, int>())
+            .def("run", &compression::methods::RMQMethod::doMethod);
+
+    py::class_<compression::methods::DAQMethod>(m, "DAQ")
+            .def(py::init<int>())
+            .def("run", &compression::methods::DAQMethod::doMethod);
 
     m.def("sent_bytes", []()-> uint64_t {
         return Network::instance().get_sent_bytes();

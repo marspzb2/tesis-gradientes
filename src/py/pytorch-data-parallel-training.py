@@ -108,6 +108,22 @@ elif COMPRESSION_NAME.lower() == "qsgd":
     COMPRESSION_CONFIG = "whole", lambda tensor: compression_python.QSGD(QSGD_Q, QSGD_BUCKET_SIZE, QSGD_NORM_P,
                                                                          QSGD_DITHER)
     METHOD_PARAMS_NAMES = f"q{QSGD_Q}b{QSGD_BUCKET_SIZE}d{"T" if QSGD_DITHER else "F"}p{"inf" if QSGD_NORM_P > 10 else QSGD_NORM_P}"
+elif COMPRESSION_NAME.lower() == "rmq":
+    RMQ_DELTA = float(os.environ.get("RMQ_DELTA", 0.01))
+    RMQ_K = int(os.environ.get("RMQ_K", 128))
+    RMQ_L = (2 * RMQ_DELTA) / (RMQ_K - 2)
+    # RMQ_L = float(os.environ.get("RMQ_L", 0.1))
+    # k *lattice_size >= 2(lattice_size + delta)
+    # lattice_size * (k-2) >= 2*delta
+    # lattice_size >= (2*delta)/(k-2)
+
+    COMPRESSION_CONFIG = "whole", lambda tensor: compression_python.RMQ(RMQ_L, RMQ_K)
+    METHOD_PARAMS_NAMES = f"l{RMQ_L}k{RMQ_K}d{RMQ_DELTA}"
+elif COMPRESSION_NAME.lower() == "daq":
+    DAQ_K = int(os.environ.get("DAQ_K", 1))
+    DAQ_NORM_P=int(os.environ.get("DAQ_NORM_P", 100000))
+    COMPRESSION_CONFIG = "whole", lambda tensor: compression_python.DAQ(DAQ_K)
+    METHOD_PARAMS_NAMES = f"k{DAQ_K}p{"infty" if DAQ_NORM_P>100 else DAQ_NORM_P}"
 
 else:
     raise RuntimeError("Error compression not supported")
@@ -304,21 +320,29 @@ class CompressionPythonState:
         for tracker in self.trackers:
             tracker.reset_vector_norms()
 
-def add_mean_from_c(series_name,metric_name,writer,iteration):
+
+def add_mean_from_c(series_name, metric_name, writer, iteration):
     if compression_python.has_number_metric(metric_name):
-        writer.add_scalar(series_name,compression_python.number_metric(metric_name).avg,iteration)
-def add_min_from_c(series_name,metric_name,writer,iteration):
+        writer.add_scalar(series_name, compression_python.number_metric(metric_name).avg, iteration)
+
+
+def add_min_from_c(series_name, metric_name, writer, iteration):
     if compression_python.has_number_metric(metric_name):
-        writer.add_scalar(series_name,compression_python.number_metric(metric_name).min,iteration)
-def add_max_from_c(series_name,metric_name,writer,iteration):
+        writer.add_scalar(series_name, compression_python.number_metric(metric_name).min, iteration)
+
+
+def add_max_from_c(series_name, metric_name, writer, iteration):
     if compression_python.has_number_metric(metric_name):
-        writer.add_scalar(series_name,compression_python.number_metric(metric_name).max,iteration)
-def add_vector_norms(series_name,metric_name,writer,iteration):
+        writer.add_scalar(series_name, compression_python.number_metric(metric_name).max, iteration)
+
+
+def add_vector_norms(series_name, metric_name, writer, iteration):
     if compression_python.has_vector_metric(metric_name):
-        writer.add_scalar(f"{series_name}_norm_0",compression_python.vector_metric(metric_name).norm_0,iteration)
-        writer.add_scalar(f"{series_name}_norm_1",compression_python.vector_metric(metric_name).norm_1,iteration)
-        writer.add_scalar(f"{series_name}_norm_2",compression_python.vector_metric(metric_name).norm_2,iteration)
-        writer.add_scalar(f"{series_name}_norm_inf",compression_python.vector_metric(metric_name).norm_inf,iteration)
+        writer.add_scalar(f"{series_name}_norm_0", compression_python.vector_metric(metric_name).norm_0, iteration)
+        writer.add_scalar(f"{series_name}_norm_1", compression_python.vector_metric(metric_name).norm_1, iteration)
+        writer.add_scalar(f"{series_name}_norm_2", compression_python.vector_metric(metric_name).norm_2, iteration)
+        writer.add_scalar(f"{series_name}_norm_inf", compression_python.vector_metric(metric_name).norm_inf, iteration)
+
 
 def train_model(rank, world_size):
     print(f"Running basic DDP example on rank {rank}.")
@@ -408,7 +432,10 @@ def train_model(rank, world_size):
                     print("Not done yet")
                 else:
                     result = compression_method_creator(gradient_tensor).run(gradient_tensor, compression_ctx)
-                    fut.set_result(result)
+                    fut.set_result(result.to(
+                        dtype=gradient_tensor.dtype,
+                        device=gradient_tensor.device,
+                    ))
                 if get_reconstruction_metric:
                     # print("Reconstruction metric computing")
                     averaged_result_of_gradient_tensor = average_tensor_on_the_network(tensor_copy)
@@ -455,7 +482,7 @@ def train_model(rank, world_size):
                     report_loss += loss.item()
                     loss.backward()
                     optimizer.step()
-                    validation_transmitted_kbytes += compression_python.get_bytes()/1024.
+                    validation_transmitted_kbytes += compression_python.sent_bytes() / 1024.
                     if iteration % REPORT_LOSS_EVERY == 0:
                         writer.add_scalar('loss', report_loss / REPORT_LOSS_EVERY, iteration)
                         python_state.error_tracker.add_summary_norms(writer, "reconstruction_error", iteration)
@@ -479,13 +506,13 @@ def train_model(rank, world_size):
                         writer.add_scalar('reconstruction_g_mean_angle', python_state.get_reconstruction_angle(),
                                           iteration)
                         python_state.g_mean_tracker.add_summary_size_kb(writer, "no_compression", iteration)
-                        writer.add_scalar('sent_kb', compression_python.get_bytes() / 1024., iteration)
+                        writer.add_scalar('sent_kb', compression_python.sent_bytes() / 1024., iteration)
                         writer.add_scalar('compression_ratio',
-                                          compression_python.get_bytes() / python_state.g_mean_tracker.bytes,
+                                          compression_python.sent_bytes() / python_state.g_mean_tracker.bytes,
                                           iteration)
-                        add_mean_from_c('average_run_length','zero-run-length',writer,iteration)
-                        add_max_from_c('max_run_length','zero-run-length',writer,iteration)
-                        add_vector_norms("error_feedback_vector","error_feed_back_vector",writer,iteration)
+                        add_mean_from_c('average_run_length', 'zero-run-length', writer, iteration)
+                        add_max_from_c('max_run_length', 'zero-run-length', writer, iteration)
+                        add_vector_norms("error_feedback_vector", "error_feed_back_vector", writer, iteration)
 
                         report_loss = 0
                         compression_python.reset_network_stats()
@@ -493,8 +520,9 @@ def train_model(rank, world_size):
                         python_state.reset_network_stats()
                         compression_python.reset_metrics(True)
 
-                    writer.add_scalar("transmitted_kb_from_last_validation",validation_transmitted_kbytes,iteration)
-                    writer.add_scalar("transmitted_mb_from_last_validation",validation_transmitted_kbytes/1024.,iteration)
+                    writer.add_scalar("transmitted_kb_from_last_validation", validation_transmitted_kbytes, iteration)
+                    writer.add_scalar("transmitted_mb_from_last_validation", validation_transmitted_kbytes / 1024.,
+                                      iteration)
                     if iteration % PRINT_LOSS_EVERY == 0:
                         print(f"Loss of {epoch_iteration}/{epoch} ({iteration})): {running_loss / PRINT_LOSS_EVERY}")
                         validate_model(ddp_model, validation_loader, criterion, writer, rank, iteration, epoch)

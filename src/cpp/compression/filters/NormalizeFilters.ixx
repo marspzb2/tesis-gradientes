@@ -8,9 +8,7 @@ module;
 export module NormalizeFilters;
 import CompressionFilter;
 import torch_scalar_utils;
-export
-{
-    namespace compression::filters {
+export namespace compression::filters {
         template<typename ValueT, typename EncodedMetaT>
         class NormalizationForwardFilter : public base::CompressionFilter<ValueT, ValueT, double, EncodedMetaT> {
         public:
@@ -163,5 +161,16 @@ export
                                        meta_tensor.slice(0, 1 + norm_size));
             }
         };
-    };
-}
+    template<typename ValueT, typename MetaEncT>
+    inline constexpr auto f_normalize_forward = base::FilterCtor<NormalizationForwardFilter<ValueT, MetaEncT>>();
+    template<typename ValueT, typename MetaEncT>
+    inline constexpr auto f_normalize_backward= base::FilterCtor<NormalizationBackwardFilter<ValueT, MetaEncT>>();
+
+    template<typename ValueT, typename MetaEncT>
+    inline constexpr auto f_normalize_by_bucket_forward= base::FilterCtor<NormalizeByBucketForwardFilter<ValueT, MetaEncT>>();
+
+    template<typename ValueT, typename MetaEncT>
+    inline constexpr auto f_normalize_by_bucket_backward= base::FilterCtor<NormalizeByBucketBackwardFilter<ValueT, MetaEncT>>();
+
+};
+

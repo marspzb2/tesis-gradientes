@@ -7,7 +7,7 @@ hello:
 init-cpp:
 	cmake --preset default
 build-cpp:
-	cmake --build build/cpp/Release
+	cmake --build --preset build-default
 install-py-env:
 	uv venv --python 3.14
 	echo "${PWD}/build/cpp/Release/lib" > .venv/lib/python3.14/site-packages/compression_python.pth

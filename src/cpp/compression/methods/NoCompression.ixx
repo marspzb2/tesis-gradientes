@@ -7,12 +7,10 @@ module;
 export module NoCompressionMethod;
 import BaseMethod;
 import Network;
-import all_filters;
 import CompressionFilter;
 using torch::Tensor;
 
 export namespace compression::methods {
-    using namespace filters;
 
     class NoCompressionMethod:public BaseCompressionMethod{
     public:

@@ -33,15 +33,18 @@
     "buildPresets": [
         {
             "name": "build-default",
-            "configurePreset": "default"
+            "configurePreset": "default",
+            "jobs": 4
         },
         {
             "name": "build-debug",
-            "configurePreset": "debug"
+            "configurePreset": "debug",
+            "jobs": 4
         },
         {
             "name": "build-docker",
             "configurePreset": "docker",
+            "jobs": 4,
             "targets": [
                 "compression_python"
             ]

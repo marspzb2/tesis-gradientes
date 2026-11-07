@@ -4,7 +4,13 @@ module;
 #include <spdlog/spdlog.h>
 export module QSGD;
 import BaseMethod;
-import all_filters;
+import ChainFilter;
+import FixedQuantizationFilters;
+import ShapeFilters;
+import NormalizeFilters;
+import SerializationFilter;
+import AllGatherFilter;
+import RegularLatticeQuantizationFilters;
 import ParallelSerialization;
 import EliasSerialization;
 import ZeroGapSerialization;

@@ -29,4 +29,7 @@ export namespace compression::filters {
             return tensor;
         }
     };
+
+    template<typename ValueT, typename MetaEncT>
+    inline constexpr auto f_save_matrix = FilterCtor<SaveMatrixFilter<ValueT, MetaEncT> >{};
 }

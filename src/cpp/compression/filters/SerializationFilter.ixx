@@ -3,7 +3,9 @@
 //
 
 module;
-#include <torch/torch.h>
+#include <ATen/core/Tensor.h>
+#include <ATen/ops/cat.h>
+#include <ATen/ops/tensor.h>
 #include <spdlog/spdlog.h>
 #include <functional>
 
@@ -11,7 +13,7 @@ export module SerializationFilter;
 import CompressionFilter;
 import torch_scalar_utils;
 import TensorSerialization;
-using torch::Tensor;
+using at::Tensor;
 
 export namespace compression::filters {
     template<typename InputT, typename OutputT, typename EncMetaT>
@@ -30,8 +32,8 @@ export namespace compression::filters {
             auto serialized = serialization_method->serialize(tensor, tensor.numel());
             return {
                 serialized.to(tensor.device()),
-                torch::cat({
-                    torch::tensor({tensor.numel()}, meta_tensor.options()),
+                at::cat({
+                    at::tensor({tensor.numel()}, meta_tensor.options()),
                     meta_tensor
                 })
             };
@@ -60,4 +62,12 @@ export namespace compression::filters {
             };
         }
     };
+
+    template<typename InputT, typename OutputT, typename EncMetaT>
+    inline constexpr auto f_serialize_values_forward = base::FilterCtor<FixedSerializationForwardFilter<InputT, OutputT,
+        EncMetaT> >{};
+
+    template<typename InputT, typename OutputT, typename EncMetaT>
+    inline constexpr auto f_serialize_values_backward = base::FilterCtor<FixedDeserializationBackwardFilter<InputT,
+        OutputT, EncMetaT> >{};
 }
